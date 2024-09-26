@@ -1,0 +1,48 @@
+[package]
+name = "pg_bm25"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "pgrx_embed_pg_bm25"
+path = "./src/bin/pgrx_embed.rs"
+
+[features]
+pg12 = ["pgrx/pg12"]
+pg13 = ["pgrx/pg13"]
+pg14 = ["pgrx/pg14"]
+pg15 = ["pgrx/pg15"]
+pg16 = ["pgrx/pg16"]
+
+[dependencies]
+aligned-vec = "0.6.1"
+anyhow = "1.0"
+bitpacking = { version = "0.9", default-features = false, features = [
+    "bitpacker4x",
+] }
+bytemuck = "1.18"
+bytes = "1.7"
+fst = "0.4"
+lazy_static = "1.5"
+pgrx = { version = "=0.12.1", default-features = false, features = [] }
+serde = { version = "1.0", features = ["derive"] }
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+rand = "0.8"
+
+[patch.crates-io]
+pgrx = { git = "https://github.com/tensorchord/pgrx.git", branch = "v0.12.1-patch" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = true
+
+[lints.clippy]
+new_without_default = "allow"
+missing_safety_doc = "allow"
+not_unsafe_ptr_arg_deref = "allow"
