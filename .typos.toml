@@ -5,4 +5,4 @@ extend-ignore-re = [
 ]
 
 [files]
-extend-exclude = ["tokenizer/*.json"]
+extend-exclude = ["tokenizer/*.json", "vendor"]
