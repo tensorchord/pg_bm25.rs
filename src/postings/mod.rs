@@ -7,6 +7,8 @@ pub use reader::{InvertedReader, Posting, PostingReader, TermDictReader, TermInf
 pub use serializer::InvertedSerializer;
 pub use writer::PostingsWriter;
 
+pub const TERMINATED_DOC: u32 = u32::MAX;
+
 pub const COMPRESSION_BLOCK_SIZE: usize =
     <bitpacking::BitPacker4x as bitpacking::BitPacker>::BLOCK_LEN;
 

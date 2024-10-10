@@ -1,0 +1,8 @@
+[default]
+extend-ignore-re = [
+    # Latex formula
+    "\\$.+?\\$",
+]
+
+[files]
+extend-exclude = ["tokenizer/*.json"]

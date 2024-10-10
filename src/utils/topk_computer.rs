@@ -1,5 +1,3 @@
-
-
 // Store 2*k elements in a buffer, and truncate to k elements when the buffer is full.
 // Using variant of median selection from quicksort.
 pub struct TopKComputer {
@@ -9,6 +7,7 @@ pub struct TopKComputer {
     threshold: f32,
 }
 
+// Computer maximum k elements in a stream with positive numbers.
 impl TopKComputer {
     pub fn new(k: usize) -> Self {
         assert!(k > 0);
@@ -16,12 +15,12 @@ impl TopKComputer {
             buffer: vec![(0.0, 0); k * 2].into_boxed_slice(),
             len: 0,
             k,
-            threshold: f32::MIN,
+            threshold: 0.0,
         }
     }
 
     pub fn push(&mut self, score: f32, id: u32) {
-        if score < self.threshold {
+        if score <= self.threshold {
             return;
         }
         if self.buffer.len() == self.len {
@@ -41,7 +40,7 @@ impl TopKComputer {
         if self.len > self.k {
             self.truncate_top_k();
         }
-        self.buffer[..self.len].sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.buffer[..self.len].sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         &self.buffer[..self.len]
     }
 
@@ -97,11 +96,15 @@ mod tests {
         let topk = topk.to_sorted_slice();
         let mut reference = reference.into_sorted_vec();
         reference.reverse();
+        println!(
+            "topk results: {:?}\nreference results: {:?}",
+            topk, reference
+        );
 
         assert_eq!(topk.len(), reference.len());
         for (a, b) in topk.iter().zip(reference.iter()) {
             assert_eq!(a.0, b.0);
             assert_eq!(a.1, b.1);
         }
-    }   
+    }
 }

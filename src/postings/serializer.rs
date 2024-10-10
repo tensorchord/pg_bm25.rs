@@ -7,7 +7,7 @@ use crate::{
         page_get_contents, MetaPageData, PageBuilder, BM25_POSTINGS, BM25_TERM_DICT,
         BM25_TERM_INFO, METAPAGE_BLKNO,
     },
-    utils::compress_block::BlockEncoder
+    utils::compress_block::BlockEncoder,
 };
 
 use super::{SkipBlock, TermInfo, COMPRESSION_BLOCK_SIZE};
@@ -176,6 +176,7 @@ impl PostingSerializer {
         pager.write_all(bytemuck::cast_slice(self.skip_write.as_slice()))?;
         pager.write_all(&self.posting_write)?;
         let blkno = pager.finalize();
+        self.last_doc_id = 0;
         self.bm25_weight = None;
         self.posting_write.clear();
         self.skip_write.clear();

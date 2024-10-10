@@ -2,13 +2,13 @@ use aligned_vec::AVec;
 
 use super::{bm25_page_size, page_get_contents, page_get_opaque};
 
-pub struct ContinousPageReader<T> {
+pub struct ContinuousPageReader<T> {
     index: pgrx::pg_sys::Relation,
     start_blkno: pgrx::pg_sys::BlockNumber,
     phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: Copy> ContinousPageReader<T> {
+impl<T: Copy> ContinuousPageReader<T> {
     pub fn new(index: pgrx::pg_sys::Relation, start_blkno: pgrx::pg_sys::BlockNumber) -> Self {
         Self {
             index,

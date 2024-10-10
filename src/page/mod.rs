@@ -2,7 +2,7 @@ mod builder;
 mod reader;
 
 pub use builder::PageBuilder;
-pub use reader::{ContinousPageReader, PageReader};
+pub use reader::{ContinuousPageReader, PageReader};
 
 pub const P_NEW: pgrx::pg_sys::BlockNumber = pgrx::pg_sys::InvalidBlockNumber;
 

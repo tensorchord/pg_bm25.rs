@@ -54,6 +54,6 @@ fn set_panic_hook() {
             })
             .unwrap_or_default();
         let backtrace = format!("Backtrace: {}", std::backtrace::Backtrace::force_capture());
-        pgrx::info!("Panickied.\n{message};\n{location};\n{backtrace}");
+        pgrx::warning!("Panickied.\n{message};\n{location};\n{backtrace}");
     }));
 }

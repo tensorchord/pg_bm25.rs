@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::page::ContinousPageReader;
+use crate::page::ContinuousPageReader;
 
 pub struct FieldNormsWriter {
     buffer: Vec<u8>,
@@ -31,11 +31,11 @@ impl FieldNormsWriter {
     }
 }
 
-pub struct FieldNormReader(ContinousPageReader<u8>);
+pub struct FieldNormReader(ContinuousPageReader<u8>);
 
 impl FieldNormReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
-        Self(ContinousPageReader::new(index, blkno))
+        Self(ContinuousPageReader::new(index, blkno))
     }
 
     pub fn read(&self, doc_id: u32) -> u8 {

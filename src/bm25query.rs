@@ -48,11 +48,11 @@ pub fn search_bm25query(target_doc: String, query: Bm25Query) -> f32 {
         pgrx::pg_sys::UnlockReleaseBuffer(meta_buffer);
 
         let tokens = crate::token::BERT_BASE_UNCASED
-            .encode_fast(query.query_str, false)
+            .encode(query.query_str, false)
             .expect("failed to tokenize");
         let tokens = tokens.get_tokens();
         let target_tokens = crate::token::BERT_BASE_UNCASED
-            .encode_fast(target_doc, false)
+            .encode(target_doc, false)
             .expect("failed to tokenize");
         let target_tokens = target_tokens.get_tokens();
         let len = target_tokens.len().try_into().unwrap();

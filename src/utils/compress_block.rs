@@ -103,8 +103,7 @@ impl BlockDecoder {
 
     pub fn decompress_block_unsorted(&mut self, block: &[u8], num_bits: u8) -> usize {
         self.len = COMPRESSION_BLOCK_SIZE;
-        let res = self.bitpacker.decompress(block, &mut self.output, num_bits);
-        res
+        self.bitpacker.decompress(block, &mut self.output, num_bits)
     }
 
     pub fn decompress_vint_sorted(&mut self, mut block: &[u8], offset: u32, count: u32) -> usize {

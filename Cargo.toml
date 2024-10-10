@@ -43,6 +43,6 @@ codegen-units = 1
 debug = true
 
 [lints.clippy]
-new_without_default = "allow"
 missing_safety_doc = "allow"
+new_without_default = "allow"
 not_unsafe_ptr_arg_deref = "allow"

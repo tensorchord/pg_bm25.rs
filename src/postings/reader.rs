@@ -5,7 +5,8 @@ use aligned_vec::{AVec, ConstAlign};
 use crate::{
     bm25weight::Bm25Weight,
     field_norm::id_to_fieldnorm,
-    page::{ContinousPageReader, MetaPageData, PageReader},
+    page::{ContinuousPageReader, MetaPageData, PageReader},
+    postings::TERMINATED_DOC,
     utils::compress_block::{compressed_block_size, BlockDecoder},
 };
 
@@ -59,11 +60,11 @@ impl TermDictReader {
     }
 }
 
-pub struct TermInfoReader(ContinousPageReader<TermInfo>);
+pub struct TermInfoReader(ContinuousPageReader<TermInfo>);
 
 impl TermInfoReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
-        Self(ContinousPageReader::new(index, blkno))
+        Self(ContinuousPageReader::new(index, blkno))
     }
 
     pub fn read(&self, term_ord: u32) -> TermInfo {
@@ -131,6 +132,21 @@ impl<'a> Posting<'a> {
         }
     }
 
+    pub fn advance(&mut self) -> bool {
+        if self.completed() {
+            return false;
+        }
+        if self.advance_cur() {
+            return true;
+        }
+        if self.advance_block() {
+            self.decode_block();
+            true
+        } else {
+            false
+        }
+    }
+
     // update skip cursor to fetch the next block's skip data. If you want to read the block, call decode_block
     pub fn advance_block(&mut self) -> bool {
         assert!(!self.completed());
@@ -159,7 +175,9 @@ impl<'a> Posting<'a> {
     }
 
     pub fn shallow_seek(&mut self, doc_id: u32) -> bool {
-        assert!(!self.completed());
+        if self.completed() {
+            return false;
+        }
         while self.skip_blocks[self.cur_block].last_doc < doc_id {
             if !self.advance_block() {
                 return false;
@@ -168,7 +186,24 @@ impl<'a> Posting<'a> {
         true
     }
 
+    pub fn seek(&mut self, doc_id: u32) -> u32 {
+        if self.completed() {
+            return TERMINATED_DOC;
+        }
+        if !self.shallow_seek(doc_id) {
+            return TERMINATED_DOC;
+        }
+        if !self.block_decoded {
+            self.decode_block();
+        }
+        self.cur_block = self.doc_decoder.output().partition_point(|&v| v < doc_id);
+        self.doc_id()
+    }
+
     pub fn doc_id(&self) -> u32 {
+        if self.completed() {
+            return TERMINATED_DOC;
+        }
         assert!(self.block_decoded);
         self.doc_decoder.output()[self.block_offset]
     }
@@ -185,15 +220,17 @@ impl<'a> Posting<'a> {
         let fieldnorm_id = self.skip_blocks[self.cur_block].blockwand_fieldnorm_id;
         let fieldnorm = id_to_fieldnorm(fieldnorm_id);
         let tf = self.skip_blocks[self.cur_block].blockwand_tf;
-        bm25_weight.score(tf, fieldnorm)
+        bm25_weight.score(fieldnorm, tf)
     }
 
     pub fn last_doc_in_block(&self) -> u32 {
-        assert!(!self.completed());
+        if self.completed() {
+            return TERMINATED_DOC;
+        }
         self.skip_blocks[self.cur_block].last_doc
     }
 
-    fn completed(&self) -> bool {
+    pub fn completed(&self) -> bool {
         self.remain_doc_cnt == 0
     }
 
@@ -221,7 +258,10 @@ impl<'a> Posting<'a> {
                 &self.posting_data[(self.bytes_offset + bytes)..],
                 self.remain_doc_cnt,
             );
-            self.freq_decoder.output_mut().iter_mut().for_each(|v| *v += 1);
+            self.freq_decoder
+                .output_mut()
+                .iter_mut()
+                .for_each(|v| *v += 1);
         } else {
             let bytes = self.doc_decoder.decompress_block_sorted(
                 &self.posting_data[self.bytes_offset..],
@@ -232,7 +272,10 @@ impl<'a> Posting<'a> {
                 &self.posting_data[(self.bytes_offset + bytes)..],
                 skip.tf_bits,
             );
-            self.freq_decoder.output_mut().iter_mut().for_each(|v| *v += 1);
+            self.freq_decoder
+                .output_mut()
+                .iter_mut()
+                .for_each(|v| *v += 1);
         }
         self.block_decoded = true;
     }

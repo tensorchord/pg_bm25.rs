@@ -20,7 +20,6 @@ impl Bm25Weight {
         self.weight * tf / (tf + K1 * (1.0 - B + B * len / self.avgdl))
     }
 
-    #[allow(dead_code)]
     pub fn max_score(&self) -> f32 {
         self.score(2_013_265_944, 2_013_265_944)
     }

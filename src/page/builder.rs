@@ -5,14 +5,14 @@ use super::P_NEW;
 pub struct PageBuilder {
     rel: pgrx::pg_sys::Relation,
     flag: u16,
-    check_continous: bool,
+    check_continuous: bool,
     first_blkno: pgrx::pg_sys::BlockNumber,
     buf: pgrx::pg_sys::Buffer,
     page: pgrx::pg_sys::Page,
 }
 
 impl PageBuilder {
-    pub fn new(rel: pgrx::pg_sys::Relation, flag: u16, check_continous: bool) -> Self {
+    pub fn new(rel: pgrx::pg_sys::Relation, flag: u16, check_continuous: bool) -> Self {
         unsafe {
             let buf = pgrx::pg_sys::ReadBuffer(rel, P_NEW);
             pgrx::pg_sys::LockBuffer(buf, pgrx::pg_sys::BUFFER_LOCK_EXCLUSIVE as _);
@@ -22,7 +22,7 @@ impl PageBuilder {
             Self {
                 rel,
                 flag,
-                check_continous,
+                check_continuous,
                 first_blkno,
                 buf,
                 page,
@@ -47,10 +47,10 @@ impl PageBuilder {
                 let buf = pgrx::pg_sys::ReadBuffer(self.rel, P_NEW);
                 pgrx::pg_sys::LockBuffer(buf, pgrx::pg_sys::BUFFER_LOCK_EXCLUSIVE as _);
                 let blkno = pgrx::pg_sys::BufferGetBlockNumber(buf);
-                if self.check_continous {
+                if self.check_continuous {
                     assert_eq!(blkno, pgrx::pg_sys::BufferGetBlockNumber(self.buf) + 1);
                 }
-                (*super::page_get_opaque(self.page)).next_blkno = blkno;                
+                (*super::page_get_opaque(self.page)).next_blkno = blkno;
 
                 pgrx::pg_sys::MarkBufferDirty(self.buf);
                 pgrx::pg_sys::UnlockReleaseBuffer(self.buf);
