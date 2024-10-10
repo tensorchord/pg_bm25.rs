@@ -11,11 +11,10 @@ name = "pgrx_embed_pg_bm25"
 path = "./src/bin/pgrx_embed.rs"
 
 [features]
-pg12 = ["pgrx/pg12"]
-pg13 = ["pgrx/pg13"]
 pg14 = ["pgrx/pg14"]
 pg15 = ["pgrx/pg15"]
 pg16 = ["pgrx/pg16"]
+pg17 = ["pgrx/pg17"]
 
 [dependencies]
 aligned-vec = "0.6.1"
@@ -27,7 +26,7 @@ bytemuck = "1.18"
 bytes = "1.7"
 fst = "0.4"
 lazy_static = "1.5"
-pgrx = { version = "=0.12.1", default-features = false, features = [] }
+pgrx = { version = "=0.12.5", default-features = false, features = [] }
 serde = { version = "1.0", features = ["derive"] }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 
@@ -35,7 +34,7 @@ tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 rand = "0.8"
 
 [patch.crates-io]
-pgrx = { git = "https://github.com/tensorchord/pgrx.git", branch = "v0.12.1-patch" }
+pgrx = { git = "https://github.com/tensorchord/pgrx.git", branch = "v0.12.5-patch" }
 
 [profile.release]
 lto = "fat"

@@ -73,9 +73,18 @@ pub const fn bm25_page_size() -> usize {
 
 const INVALID_SUB_TRANSACTION_ID: pgrx::pg_sys::SubTransactionId = 0;
 
+#[cfg(any(feature = "pg16", feature = "pg17"))]
 pub unsafe fn relation_needs_wal(relation: pgrx::pg_sys::Relation) -> bool {
     ((*(*relation).rd_rel).relpersistence == pgrx::pg_sys::RELPERSISTENCE_PERMANENT as i8)
         && ((pgrx::pg_sys::wal_level >= pgrx::pg_sys::WalLevel::WAL_LEVEL_REPLICA as _)
             || (*relation).rd_createSubid == INVALID_SUB_TRANSACTION_ID
             || (*relation).rd_firstRelfilelocatorSubid == INVALID_SUB_TRANSACTION_ID)
+}
+
+#[cfg(not(any(feature = "pg16", feature = "pg17")))]
+pub unsafe fn relation_needs_wal(relation: pgrx::pg_sys::Relation) -> bool {
+    ((*(*relation).rd_rel).relpersistence == pgrx::pg_sys::RELPERSISTENCE_PERMANENT as i8)
+        && ((pgrx::pg_sys::wal_level >= pgrx::pg_sys::WalLevel::WAL_LEVEL_REPLICA as _)
+            || (*relation).rd_createSubid == INVALID_SUB_TRANSACTION_ID
+            || (*relation).rd_firstRelfilenodeSubid == INVALID_SUB_TRANSACTION_ID)
 }
