@@ -3,11 +3,11 @@ use std::io::Read;
 use aligned_vec::{AVec, ConstAlign};
 
 use crate::{
-    bm25weight::Bm25Weight,
     field_norm::id_to_fieldnorm,
     page::{ContinuousPageReader, MetaPageData, PageReader},
     postings::TERMINATED_DOC,
     utils::compress_block::{compressed_block_size, BlockDecoder},
+    weight::Bm25Weight,
 };
 
 use super::{SkipBlock, TermInfo, COMPRESSION_BLOCK_SIZE};

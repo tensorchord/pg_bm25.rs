@@ -1,5 +1,6 @@
+#![feature(raw_ref_op)]
+
 pub mod bm25query;
-pub mod bm25weight;
 pub mod builder;
 pub mod field_norm;
 pub mod guc;
@@ -9,6 +10,7 @@ pub mod payload;
 pub mod postings;
 pub mod token;
 pub mod utils;
+pub mod weight;
 
 pgrx::pg_module_magic!();
 pgrx::extension_sql_file!("./sql/bootstrap.sql", bootstrap);
@@ -47,7 +49,7 @@ fn set_panic_hook() {
                 )
             })
             .unwrap_or_default();
-        let backtrace = format!("Backtrace: {}", std::backtrace::Backtrace::force_capture());
+        let backtrace = format!("Backtrace: {}", std::backtrace::Backtrace::capture());
         pgrx::warning!("Panickied.\n{message};\n{location};\n{backtrace}");
     }));
 }

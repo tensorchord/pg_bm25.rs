@@ -1,6 +1,8 @@
 use aligned_vec::AVec;
 
-use super::{bm25_page_size, page_get_contents, page_get_opaque};
+use crate::page::bm25_page_size;
+
+use super::{page_read, PageReadGuard};
 
 pub struct ContinuousPageReader<T> {
     index: pgrx::pg_sys::Relation,
@@ -21,15 +23,8 @@ impl<T: Copy> ContinuousPageReader<T> {
         let blkno_offset = idx / Self::page_count() as u32;
         let blkno = self.start_blkno + blkno_offset as pgrx::pg_sys::BlockNumber;
         let offset = (idx % Self::page_count() as u32) as usize;
-        unsafe {
-            let buffer = pgrx::pg_sys::ReadBuffer(self.index, blkno);
-            pgrx::pg_sys::LockBuffer(buffer, pgrx::pg_sys::BUFFER_LOCK_SHARE as _);
-            let page = pgrx::pg_sys::BufferGetPage(buffer);
-            let page_start = page_get_contents::<T>(page);
-            let data = page_start.add(offset).read();
-            pgrx::pg_sys::UnlockReleaseBuffer(buffer);
-            data
-        }
+        let page = page_read(self.index, blkno);
+        unsafe { page.content.as_ptr().cast::<T>().add(offset).read() }
     }
 
     const fn page_count() -> usize {
@@ -41,14 +36,8 @@ impl<T: Copy> ContinuousPageReader<T> {
 pub struct PageReader {
     index: pgrx::pg_sys::Relation,
     blkno: pgrx::pg_sys::BlockNumber,
-    inner: Option<PageReaderInner>,
-    finished: bool,
-}
-
-struct PageReaderInner {
-    buffer: pgrx::pg_sys::Buffer,
-    next_blkno: pgrx::pg_sys::BlockNumber,
-    data: &'static [u8], // manual control lifetime
+    inner: Option<PageReadGuard>,
+    offset: usize,
 }
 
 impl PageReader {
@@ -57,41 +46,7 @@ impl PageReader {
             index,
             blkno,
             inner: None,
-            finished: false,
-        }
-    }
-
-    fn load_block(&mut self) {
-        let buffer = unsafe { pgrx::pg_sys::ReadBuffer(self.index, self.blkno) };
-        unsafe {
-            pgrx::pg_sys::LockBuffer(buffer, pgrx::pg_sys::BUFFER_LOCK_SHARE as _);
-            let page = pgrx::pg_sys::BufferGetPage(buffer);
-            let pd_lower = (*(page as pgrx::pg_sys::PageHeader)).pd_lower;
-            let next_blkno = (*page_get_opaque(page)).next_blkno;
-            let data = page_get_contents::<u8>(page);
-            let slice = std::slice::from_raw_parts(
-                data,
-                pd_lower as usize
-                    - pgrx::pg_sys::MAXALIGN(std::mem::size_of::<pgrx::pg_sys::PageHeaderData>()),
-            );
-            self.inner = Some(PageReaderInner {
-                buffer,
-                next_blkno,
-                data: slice,
-            });
-        }
-    }
-
-    fn unload_block(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            unsafe {
-                pgrx::pg_sys::UnlockReleaseBuffer(inner.buffer);
-                if inner.next_blkno == pgrx::pg_sys::InvalidBlockNumber {
-                    self.finished = true;
-                } else {
-                    self.blkno = inner.next_blkno;
-                }
-            }
+            offset: 0,
         }
     }
 
@@ -99,23 +54,26 @@ impl PageReader {
         &mut self,
         buf: &mut AVec<u8, A>,
     ) -> std::io::Result<usize> {
-        if self.finished {
+        if self.blkno == pgrx::pg_sys::InvalidBlockNumber {
             return Ok(0);
         }
-        if self.inner.is_none() {
-            self.load_block();
-        }
-
+        let mut blkno = self.blkno;
+        self.blkno = pgrx::pg_sys::InvalidBlockNumber;
+        let mut inner = self
+            .inner
+            .take()
+            .unwrap_or_else(|| page_read(self.index, blkno));
         let mut read_len = 0;
         loop {
-            let data = self.inner.as_ref().unwrap().data;
+            let data = &inner.data()[self.offset..];
             buf.extend_from_slice(data);
             read_len += data.len();
-            self.unload_block();
-            if self.finished {
+            blkno = inner.opaque.next_blkno;
+            self.offset = 0;
+            if blkno == pgrx::pg_sys::InvalidBlockNumber {
                 break;
             } else {
-                self.load_block();
+                inner = page_read(self.index, blkno);
             }
         }
 
@@ -123,48 +81,47 @@ impl PageReader {
     }
 }
 
-impl Drop for PageReader {
-    fn drop(&mut self) {
-        self.unload_block();
-    }
-}
-
 impl std::io::Read for PageReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.finished {
+        if self.blkno == pgrx::pg_sys::InvalidBlockNumber {
             return Ok(0);
         }
-        if self.inner.is_none() {
-            self.load_block();
-        }
-        let data = &mut self.inner.as_mut().unwrap().data;
+        let inner = self
+            .inner
+            .get_or_insert_with(|| page_read(self.index, self.blkno));
+
+        let data = &inner.data()[self.offset..];
         let to_read = std::cmp::min(buf.len(), data.len());
         buf[..to_read].copy_from_slice(&data[..to_read]);
-        *data = &data[to_read..];
-        if data.is_empty() {
-            self.unload_block();
+        self.offset += to_read;
+        if to_read == data.len() {
+            self.blkno = inner.opaque.next_blkno;
+            self.offset = 0;
         }
         Ok(to_read)
     }
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
-        if self.finished {
+        if self.blkno == pgrx::pg_sys::InvalidBlockNumber {
             return Ok(0);
         }
-        if self.inner.is_none() {
-            self.load_block();
-        }
-
+        let mut blkno = self.blkno;
+        self.blkno = pgrx::pg_sys::InvalidBlockNumber;
+        let mut inner = self
+            .inner
+            .take()
+            .unwrap_or_else(|| page_read(self.index, blkno));
         let mut read_len = 0;
         loop {
-            let data = self.inner.as_ref().unwrap().data;
+            let data = &inner.data()[self.offset..];
             buf.extend_from_slice(data);
             read_len += data.len();
-            self.unload_block();
-            if self.finished {
+            blkno = inner.opaque.next_blkno;
+            self.offset = 0;
+            if blkno == pgrx::pg_sys::InvalidBlockNumber {
                 break;
             } else {
-                self.load_block();
+                inner = page_read(self.index, blkno);
             }
         }
 

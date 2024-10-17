@@ -2,13 +2,13 @@ use pgrx::FromDatum;
 
 use crate::{
     bm25query::Bm25Query,
-    bm25weight::{idf, Bm25Weight},
     field_norm::{id_to_fieldnorm, FieldNormReader},
     guc::BM25_LIMIT,
-    page::{page_get_contents, MetaPageData, METAPAGE_BLKNO},
+    page::{page_read, MetaPageData, METAPAGE_BLKNO},
     payload::PayloadReader,
     postings::{InvertedReader, Posting, TERMINATED_DOC},
     utils::topk_computer::TopKComputer,
+    weight::{idf, Bm25Weight},
 };
 
 enum Scanner {
@@ -110,14 +110,9 @@ pub unsafe extern "C" fn amendscan(scan: pgrx::pg_sys::IndexScanDesc) {
 
 // return top-k results
 unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_str: &str) -> Vec<u64> {
-    let meta = unsafe {
-        let meta_buffer = pgrx::pg_sys::ReadBuffer(index, METAPAGE_BLKNO);
-        pgrx::pg_sys::LockBuffer(meta_buffer, pgrx::pg_sys::BUFFER_LOCK_SHARE as _);
-        let meta_page = pgrx::pg_sys::BufferGetPage(meta_buffer);
-        let meta_data: *mut MetaPageData = page_get_contents(meta_page);
-        let meta_data = (*meta_data).clone();
-        pgrx::pg_sys::UnlockReleaseBuffer(meta_buffer);
-        meta_data
+    let meta = {
+        let page = page_read(index, METAPAGE_BLKNO);
+        unsafe { (page.content.as_ptr() as *const MetaPageData).read() }
     };
 
     let inverted_reader = InvertedReader::new(index, &meta).unwrap();

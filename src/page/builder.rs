@@ -1,94 +1,60 @@
-use std::backtrace::Backtrace;
+use std::ops::DerefMut;
 
-use super::P_NEW;
+use super::{page_alloc, PageFlags, PageWriteGuard};
 
+/// Utility to build pages like a file
 pub struct PageBuilder {
-    rel: pgrx::pg_sys::Relation,
-    flag: u16,
-    check_continuous: bool,
+    relation: pgrx::pg_sys::Relation,
+    flag: PageFlags,
+    skip_lock_rel: bool,
     first_blkno: pgrx::pg_sys::BlockNumber,
-    buf: pgrx::pg_sys::Buffer,
-    page: pgrx::pg_sys::Page,
+    page: Option<PageWriteGuard>,
 }
 
 impl PageBuilder {
-    pub fn new(rel: pgrx::pg_sys::Relation, flag: u16, check_continuous: bool) -> Self {
-        unsafe {
-            let buf = pgrx::pg_sys::ReadBuffer(rel, P_NEW);
-            pgrx::pg_sys::LockBuffer(buf, pgrx::pg_sys::BUFFER_LOCK_EXCLUSIVE as _);
-            let first_blkno = pgrx::pg_sys::BufferGetBlockNumber(buf);
-            let page = pgrx::pg_sys::BufferGetPage(buf);
-            super::init_page(page, flag);
-            Self {
-                rel,
-                flag,
-                check_continuous,
-                first_blkno,
-                buf,
-                page,
-            }
+    pub fn new(relation: pgrx::pg_sys::Relation, flag: PageFlags, skip_lock_rel: bool) -> Self {
+        Self {
+            relation,
+            flag,
+            skip_lock_rel,
+            first_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            page: None,
         }
     }
 
-    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
-        unsafe {
-            pgrx::pg_sys::MarkBufferDirty(self.buf);
-            pgrx::pg_sys::UnlockReleaseBuffer(self.buf);
-        }
-        let res = self.first_blkno;
-        std::mem::forget(self);
-        res
+    /// finalize the page and return the first block number
+    /// if it hasn't been written yet, it will return InvalidBlockNumber
+    pub fn finalize(mut self) -> pgrx::pg_sys::BlockNumber {
+        self.page.take();
+        self.first_blkno
     }
 
-    fn flush_page(&mut self) {
-        let len = self.page_space().len();
-        if len == 0 {
-            unsafe {
-                let buf = pgrx::pg_sys::ReadBuffer(self.rel, P_NEW);
-                pgrx::pg_sys::LockBuffer(buf, pgrx::pg_sys::BUFFER_LOCK_EXCLUSIVE as _);
-                let blkno = pgrx::pg_sys::BufferGetBlockNumber(buf);
-                if self.check_continuous {
-                    assert_eq!(blkno, pgrx::pg_sys::BufferGetBlockNumber(self.buf) + 1);
-                }
-                (*super::page_get_opaque(self.page)).next_blkno = blkno;
-
-                pgrx::pg_sys::MarkBufferDirty(self.buf);
-                pgrx::pg_sys::UnlockReleaseBuffer(self.buf);
-
-                let page = pgrx::pg_sys::BufferGetPage(buf);
-                super::init_page(page, self.flag);
-
-                self.buf = buf;
-                self.page = page;
-            }
-        }
+    fn change_page(&mut self) {
+        let mut old_page = self.page.take().unwrap();
+        let new_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+        old_page.opaque.next_blkno = new_page.blkno();
+        self.page = Some(new_page);
     }
 
     fn offset(&mut self) -> &mut u16 {
-        unsafe { &mut (*(self.page as pgrx::pg_sys::PageHeader)).pd_lower }
+        let page = self.page.as_mut().unwrap().deref_mut();
+        &mut page.header.pd_lower
     }
 
-    fn page_space(&mut self) -> &mut [u8] {
-        unsafe {
-            let pd_lower = (*(self.page as pgrx::pg_sys::PageHeader)).pd_lower;
-            let pd_upper = (*(self.page as pgrx::pg_sys::PageHeader)).pd_upper;
-            std::slice::from_raw_parts_mut(
-                self.page.add(pd_lower as usize).cast(),
-                (pd_upper - pd_lower) as usize,
-            )
+    fn freespace_mut(&mut self) -> &mut [u8] {
+        if self.page.is_none() {
+            let page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+            self.first_blkno = page.blkno();
+            self.page = Some(page);
         }
+        self.page.as_mut().unwrap().deref_mut().freespace_mut()
     }
 }
 
 impl Drop for PageBuilder {
     fn drop(&mut self) {
-        unsafe {
-            pgrx::pg_sys::MarkBufferDirty(self.buf);
-            pgrx::pg_sys::UnlockReleaseBuffer(self.buf);
-            pgrx::warning!(
-                "PageBuilder dropped without finalizing, Backtrace: \n{}",
-                Backtrace::force_capture()
-            );
+        if self.page.is_some() {
+            pgrx::warning!("PageBuilder dropped without finalizing");
         }
     }
 }
@@ -104,11 +70,14 @@ impl std::io::Write for PageBuilder {
 
     fn write_all(&mut self, mut data: &[u8]) -> std::io::Result<()> {
         while !data.is_empty() {
-            let space = self.page_space();
-            let len = space.len().min(data.len());
+            let space = self.freespace_mut();
+            let space_len = space.len();
+            let len = space_len.min(data.len());
             space[..len].copy_from_slice(&data[..len]);
             *self.offset() += len as u16;
-            self.flush_page();
+            if len == space_len {
+                self.change_page();
+            }
             data = &data[len..];
         }
         Ok(())

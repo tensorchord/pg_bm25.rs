@@ -21,7 +21,6 @@ fn _bm25_amhandler(
         )
     };
 
-    amroutine.amstrategies = 1;
     amroutine.amcanorderbyop = true;
     amroutine.amoptionalkey = true;
 
@@ -52,7 +51,7 @@ pub extern "C" fn amvalidate(_opclass_oid: pgrx::pg_sys::Oid) -> bool {
 #[pgrx::pg_guard]
 pub unsafe extern "C" fn amcostestimate(
     _root: *mut pgrx::pg_sys::PlannerInfo,
-    _path: *mut pgrx::pg_sys::IndexPath,
+    path: *mut pgrx::pg_sys::IndexPath,
     _loop_count: f64,
     index_startup_cost: *mut pgrx::pg_sys::Cost,
     index_total_cost: *mut pgrx::pg_sys::Cost,
@@ -60,6 +59,14 @@ pub unsafe extern "C" fn amcostestimate(
     index_correlation: *mut f64,
     index_pages: *mut f64,
 ) {
+    if (*path).indexorderbys.is_null() && (*path).indexclauses.is_null() {
+        *index_startup_cost = f64::MAX;
+        *index_total_cost = f64::MAX;
+        *index_selectivity = 0.0;
+        *index_correlation = 0.0;
+        *index_pages = 0.0;
+        return;
+    }
     // TODO: Implement detailed cost estimation
     *index_startup_cost = 0.0;
     *index_total_cost = 0.0;
