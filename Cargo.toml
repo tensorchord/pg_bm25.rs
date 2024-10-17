@@ -18,14 +18,12 @@ pg17 = ["pgrx/pg17"]
 
 [dependencies]
 aligned-vec = "0.6.1"
-anyhow = "1.0"
 bitflags = "2.6.0"
 bitpacking = { version = "0.9", default-features = false, features = [
     "bitpacker4x",
 ] }
 bytemuck = "1.18"
 bytes = "1.7"
-fst = "0.4"
 lazy_static = "1.5"
 pgrx = { version = "=0.12.5", default-features = false, features = [] }
 serde = { version = "1.0", features = ["derive"] }

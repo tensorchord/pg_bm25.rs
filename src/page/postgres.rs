@@ -22,8 +22,7 @@ bitflags::bitflags! {
         const PAYLOAD = 1 << 1;
         const FIELD_NORMS = 1 << 2;
         const POSTINGS = 1 << 3;
-        const TERM_DICT = 1 << 4;
-        const TERM_INFO = 1 << 5;
+        const TERM_INFO = 1 << 4;
     }
 }
 
@@ -215,10 +214,6 @@ pub fn page_alloc(
             ForkNumber::MAIN_FORKNUM,
             std::ptr::null_mut(),
             arg_flags,
-        );
-        pgrx::info!(
-            "page_alloc: blkno={}",
-            pgrx::pg_sys::BufferGetBlockNumber(buf)
         );
         let state = GenericXLogStart(relation);
         let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);

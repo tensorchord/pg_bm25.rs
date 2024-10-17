@@ -1,8 +1,10 @@
-use pgrx::{FromDatum, PgMemoryContexts};
+use pgrx::{itemptr::item_pointer_to_u64, FromDatum, PgMemoryContexts};
 
 use crate::{
     builder::IndexBuilder,
-    page::{page_alloc, page_write, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO},
+    page::{
+        page_alloc, page_write, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO, META_VERSION,
+    },
 };
 
 struct BuildState {
@@ -30,7 +32,7 @@ pub unsafe extern "C" fn ambuild(
     pgrx::pg_sys::IndexBuildHeapScan(heap, index, index_info, Some(build_callback), &mut state);
     state.builder.finalize();
     init_metapage(&state);
-    write_down(&state).unwrap();
+    write_down(&state);
 
     let mut result = unsafe { pgrx::PgBox::<pgrx::pg_sys::IndexBuildResult>::alloc() };
     result.heap_tuples = state.heap_tuples as f64;
@@ -54,8 +56,8 @@ unsafe extern "C" fn build_callback(
         let Some(docs) = <&[u8]>::from_datum(*datum, *is_null) else {
             return;
         };
-        let pointer = pgrx::itemptr::item_pointer_to_u64(unsafe { ctid.read() });
-        state.builder.insert(pointer, docs);
+        let id = item_pointer_to_u64(unsafe { ctid.read() });
+        state.builder.insert(id, docs);
         state.index_tuples += 1;
     });
     state.memctx.reset();
@@ -76,9 +78,9 @@ unsafe fn init_metapage(state: &BuildState) {
         .as_mut_ptr()
         .cast::<MetaPageData>()
         .write(MetaPageData {
+            version: META_VERSION,
             doc_cnt: state.builder.doc_cnt(),
             avg_dl: state.builder.avg_dl(),
-            term_dict_blkno: pgrx::pg_sys::InvalidBlockNumber,
             term_info_blkno: pgrx::pg_sys::InvalidBlockNumber,
             field_norms_blkno: pgrx::pg_sys::InvalidBlockNumber,
             payload_blkno: pgrx::pg_sys::InvalidBlockNumber,
@@ -86,32 +88,29 @@ unsafe fn init_metapage(state: &BuildState) {
     meta_page.header.pd_lower += std::mem::size_of::<MetaPageData>() as u16;
 }
 
-unsafe fn write_down(state: &BuildState) -> anyhow::Result<()> {
+unsafe fn write_down(state: &BuildState) {
     // payload
     let mut page_builder = PageBuilder::new(state.index, PageFlags::PAYLOAD, true);
-    state.builder.write_payload(&mut page_builder)?;
+    state.builder.write_payload(&mut page_builder);
     let payload_blk = page_builder.finalize();
 
     // field norms
     let mut page_builder = PageBuilder::new(state.index, PageFlags::FIELD_NORMS, true);
-    state.builder.write_field_norms(&mut page_builder)?;
+    state.builder.write_field_norms(&mut page_builder);
     let field_norms_blk = page_builder.finalize();
     {
         // postings need field norms
         let mut meta_page = page_write(state.index, METAPAGE_BLKNO);
         let metadata = &mut *meta_page.content.as_mut_ptr().cast::<MetaPageData>();
-        metadata.field_norms_blkno = field_norms_blk;
         metadata.payload_blkno = payload_blk;
+        metadata.field_norms_blkno = field_norms_blk;
     }
 
     // postings
-    let [term_dict_blk, term_info_blk] = state.builder.write_postings(state.index)?;
+    let term_info_blk = state.builder.write_postings(state.index);
     {
         let mut meta_page = page_write(state.index, METAPAGE_BLKNO);
         let metadata = &mut *meta_page.content.as_mut_ptr().cast::<MetaPageData>();
-        metadata.term_dict_blkno = term_dict_blk;
         metadata.term_info_blkno = term_info_blk;
     }
-
-    Ok(())
 }

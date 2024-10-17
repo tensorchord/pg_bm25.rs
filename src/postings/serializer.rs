@@ -3,6 +3,7 @@ use std::io::Write;
 use crate::{
     field_norm::{id_to_fieldnorm, FieldNormReader, MAX_FIELD_NORM},
     page::{page_read, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO},
+    token::VOCAB_LEN,
     utils::compress_block::BlockEncoder,
     weight::{idf, Bm25Weight},
 };
@@ -10,93 +11,71 @@ use crate::{
 use super::{SkipBlock, TermInfo, COMPRESSION_BLOCK_SIZE};
 
 pub struct InvertedSerializer {
-    term_dict_serializer: TermDictSerializer,
     postings_serializer: PostingSerializer,
+    term_info_serializer: TermInfoSerializer,
     current_term_info: TermInfo,
 }
 
 impl InvertedSerializer {
-    pub fn new(
-        index: pgrx::pg_sys::Relation,
-        total_doc_cnt: u32,
-        avg_dl: f32,
-    ) -> anyhow::Result<Self> {
-        let term_dict_serializer = TermDictSerializer::new(index)?;
+    pub fn new(index: pgrx::pg_sys::Relation, total_doc_cnt: u32, avg_dl: f32) -> Self {
         let postings_serializer = PostingSerializer::new(index, total_doc_cnt, avg_dl);
-        Ok(Self {
-            term_dict_serializer,
+        let term_info_serializer = TermInfoSerializer::new(index);
+        Self {
             postings_serializer,
+            term_info_serializer,
             current_term_info: TermInfo::default(),
-        })
+        }
     }
 
-    pub fn new_term(&mut self, term: &[u8], doc_freq: u32) -> anyhow::Result<()> {
-        self.term_dict_serializer.insert_key(term)?;
-        self.postings_serializer.new_term(doc_freq);
-        self.current_term_info = TermInfo::default();
-        Ok(())
+    pub fn new_term(&mut self, doc_count: u32) {
+        self.current_term_info = TermInfo {
+            docs: doc_count,
+            postings_blkno: pgrx::pg_sys::InvalidBlockNumber,
+        };
+        if doc_count != 0 {
+            self.postings_serializer.new_term(doc_count);
+        }
     }
 
-    pub fn write_doc(&mut self, doc_id: u32, freq: u32) -> anyhow::Result<()> {
-        self.current_term_info.docs += 1;
-        self.postings_serializer.write_doc(doc_id, freq)?;
-        Ok(())
+    pub fn write_doc(&mut self, doc_id: u32, freq: u32) {
+        self.postings_serializer.write_doc(doc_id, freq);
     }
 
-    pub fn close_term(&mut self) -> anyhow::Result<()> {
-        let blkno = self.postings_serializer.close_term()?;
-        self.current_term_info.postings_blkno = blkno;
-        self.term_dict_serializer
-            .insert_value(self.current_term_info);
-        Ok(())
+    pub fn close_term(&mut self) {
+        if self.current_term_info.docs != 0 {
+            self.current_term_info.postings_blkno = self.postings_serializer.close_term();
+        }
+        self.term_info_serializer.push(self.current_term_info);
     }
 
-    // return [term_dict_blk, term_info_blk]
-    pub fn finalize(self) -> anyhow::Result<[pgrx::pg_sys::BlockNumber; 2]> {
-        self.term_dict_serializer.finalize()
+    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
+        self.term_info_serializer.finalize()
     }
 }
 
-struct TermDictSerializer {
+struct TermInfoSerializer {
     index: pgrx::pg_sys::Relation,
-    term_ord: u64,
-    fst_builder: fst::MapBuilder<PageBuilder>,
-    term_infos: Vec<TermInfo>, // TODO: use bitpacking
+    term_infos: Vec<TermInfo>,
 }
 
-impl TermDictSerializer {
-    pub fn new(index: pgrx::pg_sys::Relation) -> anyhow::Result<Self> {
-        let pager = PageBuilder::new(index, PageFlags::TERM_DICT, true);
-        Ok(Self {
+impl TermInfoSerializer {
+    pub fn new(index: pgrx::pg_sys::Relation) -> Self {
+        Self {
             index,
-            term_ord: 0,
-            fst_builder: fst::MapBuilder::new(pager)?,
-            term_infos: Vec::new(),
-        })
+            term_infos: Vec::with_capacity(*VOCAB_LEN as usize),
+        }
     }
 
-    pub fn insert_key(&mut self, key: &[u8]) -> anyhow::Result<()> {
-        self.fst_builder
-            .insert(key, self.term_ord)
-            .map_err(|e| anyhow::anyhow!("failed to insert key: {:?}", e))?;
-        self.term_ord += 1;
-        Ok(())
+    pub fn push(&mut self, term_info: TermInfo) {
+        self.term_infos.push(term_info);
     }
 
-    pub fn insert_value(&mut self, value: TermInfo) {
-        self.term_infos.push(value);
-    }
-
-    // return [term_dict_blk, term_info_blk]
-    pub fn finalize(self) -> anyhow::Result<[pgrx::pg_sys::BlockNumber; 2]> {
-        let term_dict_pager = self.fst_builder.into_inner()?;
-        let term_dict_blk = term_dict_pager.finalize();
-
-        let mut term_info_pager = PageBuilder::new(self.index, PageFlags::TERM_INFO, true);
-        term_info_pager.write_all(bytemuck::cast_slice(&self.term_infos))?;
-        let term_info_blk = term_info_pager.finalize();
-
-        Ok([term_dict_blk, term_info_blk])
+    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
+        let mut pager = PageBuilder::new(self.index, PageFlags::TERM_INFO, true);
+        pager
+            .write_all(bytemuck::cast_slice(&self.term_infos))
+            .unwrap();
+        pager.finalize()
     }
 }
 
@@ -140,42 +119,45 @@ impl PostingSerializer {
         }
     }
 
-    pub fn new_term(&mut self, doc_freq: u32) {
-        let idf = idf(self.total_doc_cnt, doc_freq);
+    pub fn new_term(&mut self, doc_count: u32) {
+        let idf = idf(self.total_doc_cnt, doc_count);
         self.bm25_weight = Some(Bm25Weight::new(idf, self.avg_dl));
     }
 
-    pub fn write_doc(&mut self, doc_id: u32, freq: u32) -> anyhow::Result<()> {
+    pub fn write_doc(&mut self, doc_id: u32, freq: u32) {
         self.doc_ids[self.block_size] = doc_id;
         self.term_freqs[self.block_size] = freq;
         self.block_size += 1;
         if self.block_size == COMPRESSION_BLOCK_SIZE {
-            self.flush_block()?;
+            self.flush_block();
         }
-        Ok(())
     }
 
-    pub fn close_term(&mut self) -> anyhow::Result<pgrx::pg_sys::BlockNumber> {
+    pub fn close_term(&mut self) -> pgrx::pg_sys::BlockNumber {
         if self.block_size > 0 {
             if self.block_size == COMPRESSION_BLOCK_SIZE {
-                self.flush_block()?;
+                self.flush_block();
             } else {
-                self.flush_block_unfull()?;
+                self.flush_block_unfull();
             }
         }
         let mut pager = PageBuilder::new(self.index, PageFlags::POSTINGS, true);
-        pager.write_all(&u32::try_from(self.skip_write.len()).unwrap().to_le_bytes())?;
-        pager.write_all(bytemuck::cast_slice(self.skip_write.as_slice()))?;
-        pager.write_all(&self.posting_write)?;
+        pager
+            .write_all(&u32::try_from(self.skip_write.len()).unwrap().to_le_bytes())
+            .unwrap();
+        pager
+            .write_all(bytemuck::cast_slice(self.skip_write.as_slice()))
+            .unwrap();
+        pager.write_all(&self.posting_write).unwrap();
         let blkno = pager.finalize();
         self.last_doc_id = 0;
         self.bm25_weight = None;
         self.posting_write.clear();
         self.skip_write.clear();
-        Ok(blkno)
+        blkno
     }
 
-    fn flush_block(&mut self) -> anyhow::Result<()> {
+    fn flush_block(&mut self) {
         assert!(self.block_size == COMPRESSION_BLOCK_SIZE);
 
         // doc_id
@@ -203,14 +185,13 @@ impl PostingSerializer {
             tf_bits,
             blockwand_tf,
             blockwand_fieldnorm_id,
+            reserved: 0,
         });
 
         self.block_size = 0;
-
-        Ok(())
     }
 
-    fn flush_block_unfull(&mut self) -> anyhow::Result<()> {
+    fn flush_block_unfull(&mut self) {
         assert!(self.block_size > 0);
 
         // doc_id
@@ -238,11 +219,10 @@ impl PostingSerializer {
             tf_bits: 0,
             blockwand_tf,
             blockwand_fieldnorm_id,
+            reserved: 0,
         });
 
         self.block_size = 0;
-
-        Ok(())
     }
 
     fn block_wand(&self) -> (u32, u8) {
