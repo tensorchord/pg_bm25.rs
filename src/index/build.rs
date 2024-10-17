@@ -2,10 +2,7 @@ use pgrx::{FromDatum, PgMemoryContexts};
 
 use crate::{
     builder::IndexBuilder,
-    page::{
-        init_page, page_get_contents, MetaPageData, PageBuilder, BM25_FIELD_NORMS, BM25_META,
-        BM25_PAYLOAD, METAPAGE_BLKNO,
-    },
+    page::{page_alloc, page_write, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO},
 };
 
 struct BuildState {
@@ -34,18 +31,6 @@ pub unsafe extern "C" fn ambuild(
     state.builder.finalize();
     init_metapage(&state);
     write_down(&state).unwrap();
-    if crate::page::relation_needs_wal(index) {
-        pgrx::pg_sys::log_newpage_range(
-            index,
-            pgrx::pg_sys::ForkNumber::MAIN_FORKNUM,
-            0,
-            pgrx::pg_sys::RelationGetNumberOfBlocksInFork(
-                index,
-                pgrx::pg_sys::ForkNumber::MAIN_FORKNUM,
-            ),
-            true,
-        );
-    }
 
     let mut result = unsafe { pgrx::PgBox::<pgrx::pg_sys::IndexBuildResult>::alloc() };
     result.heap_tuples = state.heap_tuples as f64;
@@ -83,51 +68,50 @@ pub unsafe extern "C" fn ambuildempty(_index: pgrx::pg_sys::Relation) {
     pgrx::error!("Unlogged indexes are not supported.");
 }
 
-// TODO: deal with xlog
 unsafe fn init_metapage(state: &BuildState) {
-    let meta_buffer = pgrx::pg_sys::ReadBuffer(state.index, pgrx::pg_sys::InvalidBlockNumber);
-    pgrx::pg_sys::LockBuffer(meta_buffer, pgrx::pg_sys::BUFFER_LOCK_EXCLUSIVE as _);
-    assert!(pgrx::pg_sys::BufferGetBlockNumber(meta_buffer) == METAPAGE_BLKNO);
-
-    let meta_page = pgrx::pg_sys::BufferGetPage(meta_buffer);
-    init_page(meta_page, BM25_META);
-    let meta_data: *mut MetaPageData = page_get_contents(meta_page);
-    (*meta_data).doc_cnt = state.builder.doc_cnt();
-    (*meta_data).avg_dl = state.builder.avg_dl();
-    (*meta_data).term_dict_blkno = pgrx::pg_sys::InvalidBlockNumber;
-    (*meta_data).term_info_blkno = pgrx::pg_sys::InvalidBlockNumber;
-    (*meta_data).field_norms_blkno = pgrx::pg_sys::InvalidBlockNumber;
-    (*meta_data).payload_blkno = pgrx::pg_sys::InvalidBlockNumber;
-
-    (*(meta_page as pgrx::pg_sys::PageHeader)).pd_lower +=
-        std::mem::size_of::<MetaPageData>() as u16;
-    pgrx::pg_sys::MarkBufferDirty(meta_buffer);
-    pgrx::pg_sys::UnlockReleaseBuffer(meta_buffer);
+    let mut meta_page = page_alloc(state.index, PageFlags::META, false);
+    assert_eq!(meta_page.blkno(), METAPAGE_BLKNO);
+    meta_page
+        .content
+        .as_mut_ptr()
+        .cast::<MetaPageData>()
+        .write(MetaPageData {
+            doc_cnt: state.builder.doc_cnt(),
+            avg_dl: state.builder.avg_dl(),
+            term_dict_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            term_info_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            field_norms_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            payload_blkno: pgrx::pg_sys::InvalidBlockNumber,
+        });
+    meta_page.header.pd_lower += std::mem::size_of::<MetaPageData>() as u16;
 }
 
 unsafe fn write_down(state: &BuildState) -> anyhow::Result<()> {
     // payload
-    let mut page_builder = PageBuilder::new(state.index, BM25_PAYLOAD, true);
+    let mut page_builder = PageBuilder::new(state.index, PageFlags::PAYLOAD, true);
     state.builder.write_payload(&mut page_builder)?;
     let payload_blk = page_builder.finalize();
 
     // field norms
-    let mut page_builder = PageBuilder::new(state.index, BM25_FIELD_NORMS, true);
+    let mut page_builder = PageBuilder::new(state.index, PageFlags::FIELD_NORMS, true);
     state.builder.write_field_norms(&mut page_builder)?;
     let field_norms_blk = page_builder.finalize();
+    {
+        // postings need field norms
+        let mut meta_page = page_write(state.index, METAPAGE_BLKNO);
+        let metadata = &mut *meta_page.content.as_mut_ptr().cast::<MetaPageData>();
+        metadata.field_norms_blkno = field_norms_blk;
+        metadata.payload_blkno = payload_blk;
+    }
 
     // postings
     let [term_dict_blk, term_info_blk] = state.builder.write_postings(state.index)?;
-
-    let meta_buffer = pgrx::pg_sys::ReadBuffer(state.index, METAPAGE_BLKNO);
-    pgrx::pg_sys::LockBuffer(meta_buffer, pgrx::pg_sys::BUFFER_LOCK_EXCLUSIVE as _);
-    let meta_page = pgrx::pg_sys::BufferGetPage(meta_buffer);
-    let meta_data: *mut MetaPageData = page_get_contents(meta_page);
-    (*meta_data).term_dict_blkno = term_dict_blk;
-    (*meta_data).term_info_blkno = term_info_blk;
-    (*meta_data).field_norms_blkno = field_norms_blk;
-    (*meta_data).payload_blkno = payload_blk;
-    pgrx::pg_sys::UnlockReleaseBuffer(meta_buffer);
+    {
+        let mut meta_page = page_write(state.index, METAPAGE_BLKNO);
+        let metadata = &mut *meta_page.content.as_mut_ptr().cast::<MetaPageData>();
+        metadata.term_dict_blkno = term_dict_blk;
+        metadata.term_info_blkno = term_info_blk;
+    }
 
     Ok(())
 }

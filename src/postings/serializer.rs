@@ -1,13 +1,10 @@
 use std::io::Write;
 
 use crate::{
-    bm25weight::{idf, Bm25Weight},
     field_norm::{id_to_fieldnorm, FieldNormReader, MAX_FIELD_NORM},
-    page::{
-        page_get_contents, MetaPageData, PageBuilder, BM25_POSTINGS, BM25_TERM_DICT,
-        BM25_TERM_INFO, METAPAGE_BLKNO,
-    },
+    page::{page_read, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO},
     utils::compress_block::BlockEncoder,
+    weight::{idf, Bm25Weight},
 };
 
 use super::{SkipBlock, TermInfo, COMPRESSION_BLOCK_SIZE};
@@ -69,7 +66,7 @@ struct TermDictSerializer {
 
 impl TermDictSerializer {
     pub fn new(index: pgrx::pg_sys::Relation) -> anyhow::Result<Self> {
-        let pager = PageBuilder::new(index, BM25_TERM_DICT, false);
+        let pager = PageBuilder::new(index, PageFlags::TERM_DICT, true);
         Ok(Self {
             index,
             term_ord: 0,
@@ -95,7 +92,7 @@ impl TermDictSerializer {
         let term_dict_pager = self.fst_builder.into_inner()?;
         let term_dict_blk = term_dict_pager.finalize();
 
-        let mut term_info_pager = PageBuilder::new(self.index, BM25_TERM_INFO, true);
+        let mut term_info_pager = PageBuilder::new(self.index, PageFlags::TERM_INFO, true);
         term_info_pager.write_all(bytemuck::cast_slice(&self.term_infos))?;
         let term_info_blk = term_info_pager.finalize();
 
@@ -123,13 +120,8 @@ struct PostingSerializer {
 impl PostingSerializer {
     pub fn new(index: pgrx::pg_sys::Relation, total_doc_cnt: u32, avg_dl: f32) -> Self {
         let filednorm_blkno = unsafe {
-            let meta_buffer = pgrx::pg_sys::ReadBuffer(index, METAPAGE_BLKNO);
-            pgrx::pg_sys::LockBuffer(meta_buffer, pgrx::pg_sys::BUFFER_LOCK_SHARE as _);
-            let meta_page = pgrx::pg_sys::BufferGetPage(meta_buffer);
-            let meta_data: *mut MetaPageData = page_get_contents(meta_page);
-            let blkno = (*meta_data).field_norms_blkno;
-            pgrx::pg_sys::UnlockReleaseBuffer(meta_buffer);
-            blkno
+            let meta_page = page_read(index, METAPAGE_BLKNO);
+            (*meta_page.content.as_ptr().cast::<MetaPageData>()).field_norms_blkno
         };
 
         Self {
@@ -171,7 +163,7 @@ impl PostingSerializer {
                 self.flush_block_unfull()?;
             }
         }
-        let mut pager = PageBuilder::new(self.index, BM25_POSTINGS, false);
+        let mut pager = PageBuilder::new(self.index, PageFlags::POSTINGS, true);
         pager.write_all(&u32::try_from(self.skip_write.len()).unwrap().to_le_bytes())?;
         pager.write_all(bytemuck::cast_slice(self.skip_write.as_slice()))?;
         pager.write_all(&self.posting_write)?;

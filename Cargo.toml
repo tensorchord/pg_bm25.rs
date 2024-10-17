@@ -19,6 +19,7 @@ pg17 = ["pgrx/pg17"]
 [dependencies]
 aligned-vec = "0.6.1"
 anyhow = "1.0"
+bitflags = "2.6.0"
 bitpacking = { version = "0.9", default-features = false, features = [
     "bitpacker4x",
 ] }
