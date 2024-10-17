@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use aligned_vec::{AVec, ConstAlign};
 
 use crate::{
@@ -14,52 +12,26 @@ use super::{SkipBlock, TermInfo, COMPRESSION_BLOCK_SIZE};
 
 pub struct InvertedReader {
     index: pgrx::pg_sys::Relation,
-    term_dict_reader: TermDictReader,
     term_info_reader: TermInfoReader,
 }
 
 impl InvertedReader {
-    pub fn new(index: pgrx::pg_sys::Relation, meta: &MetaPageData) -> anyhow::Result<Self> {
-        let term_dict_reader = TermDictReader::new(index, meta.term_dict_blkno)?;
+    pub fn new(index: pgrx::pg_sys::Relation, meta: &MetaPageData) -> Self {
         let term_info_reader = TermInfoReader::new(index, meta.term_info_blkno);
-        Ok(Self {
+        Self {
             index,
-            term_dict_reader,
             term_info_reader,
-        })
+        }
     }
 
-    pub fn get_posting_reader(&self, term: &[u8]) -> anyhow::Result<PostingReader> {
-        let term_id = self
-            .term_dict_reader
-            .get(term)
-            .ok_or_else(|| anyhow::anyhow!("term not found"))?;
+    pub fn get_posting_reader(&self, term_id: u32) -> Option<PostingReader> {
         let term_info = self.term_info_reader.read(term_id);
-        PostingReader::new(self.index, term_info)
+        if term_info.docs == 0 {
+            return None;
+        }
+        Some(PostingReader::new(self.index, term_info))
     }
 }
-
-pub struct TermDictReader {
-    map: fst::Map<Vec<u8>>,
-}
-
-impl TermDictReader {
-    pub fn new(
-        index: pgrx::pg_sys::Relation,
-        blkno: pgrx::pg_sys::BlockNumber,
-    ) -> anyhow::Result<Self> {
-        let mut pager = PageReader::new(index, blkno);
-        let mut buf = Vec::new();
-        pager.read_to_end(&mut buf)?;
-        let map = fst::Map::new(buf)?;
-        Ok(Self { map })
-    }
-
-    pub fn get(&self, key: &[u8]) -> Option<u32> {
-        self.map.get(key).map(|v| v.try_into().unwrap())
-    }
-}
-
 pub struct TermInfoReader(ContinuousPageReader<TermInfo>);
 
 impl TermInfoReader {
@@ -67,8 +39,8 @@ impl TermInfoReader {
         Self(ContinuousPageReader::new(index, blkno))
     }
 
-    pub fn read(&self, term_ord: u32) -> TermInfo {
-        self.0.read(term_ord)
+    pub fn read(&self, term_id: u32) -> TermInfo {
+        self.0.read(term_id)
     }
 }
 
@@ -78,14 +50,14 @@ pub struct PostingReader {
 }
 
 impl PostingReader {
-    pub fn new(index: pgrx::pg_sys::Relation, term_info: TermInfo) -> anyhow::Result<Self> {
+    pub fn new(index: pgrx::pg_sys::Relation, term_info: TermInfo) -> Self {
         let mut reader = PageReader::new(index, term_info.postings_blkno);
         let mut data = AVec::new(4);
-        reader.read_to_end_aligned(&mut data)?;
-        Ok(Self {
+        reader.read_to_end_aligned(&mut data).unwrap();
+        Self {
             doc_cnt: term_info.docs,
             data,
-        })
+        }
     }
 
     pub fn get_posting(&self) -> Posting {

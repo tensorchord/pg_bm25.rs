@@ -26,30 +26,4 @@ compiler_error!("PostgreSQL version must be selected.");
 unsafe extern "C" fn _PG_init() {
     index::init();
     guc::init();
-    set_panic_hook();
-}
-
-fn set_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            format!("Message: {}", s)
-        } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            format!("Message: {}", s)
-        } else {
-            String::new()
-        };
-        let location = info
-            .location()
-            .map(|location| {
-                format!(
-                    "Location: {}:{}:{}.",
-                    location.file(),
-                    location.line(),
-                    location.column()
-                )
-            })
-            .unwrap_or_default();
-        let backtrace = format!("Backtrace: {}", std::backtrace::Backtrace::capture());
-        pgrx::warning!("Panickied.\n{message};\n{location};\n{backtrace}");
-    }));
 }

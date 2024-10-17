@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use crate::page::ContinuousPageReader;
 
 pub struct FieldNormsWriter {
@@ -11,19 +9,8 @@ impl FieldNormsWriter {
         Self { buffer: Vec::new() }
     }
 
-    pub fn insert(&mut self, doc_id: u32, tokens: &[String]) {
-        match self.buffer.len().cmp(&(doc_id as usize)) {
-            Ordering::Less => {
-                // we fill intermediary `DocId` as  having a fieldnorm of 0.
-                self.buffer.resize(doc_id as usize, 0u8);
-            }
-            Ordering::Equal => {}
-            Ordering::Greater => {
-                panic!("Cannot register a given fieldnorm twice")
-            }
-        }
-        self.buffer
-            .push(fieldnorm_to_id(tokens.len().try_into().unwrap()));
+    pub fn insert(&mut self, fieldnorm: u32) {
+        self.buffer.push(fieldnorm_to_id(fieldnorm));
     }
 
     pub fn data(&self) -> &[u8] {

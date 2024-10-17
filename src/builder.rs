@@ -27,19 +27,20 @@ impl IndexBuilder {
         }
     }
 
-    pub fn insert(&mut self, id: u64, document: &[u8]) {
-        let tokens = token::BERT_BASE_UNCASED
-            .encode(std::str::from_utf8(document).unwrap(), false)
+    pub fn insert(&mut self, id: u64, docs: &[u8]) {
+        let encoding = token::TOKENIZER
+            .encode_fast(std::str::from_utf8(docs).unwrap(), false)
             .expect("failed to tokenize");
-        let tokens = tokens.get_tokens();
-        self.postings_writer.insert(self.doc_cnt, tokens);
-        self.field_norms_writer.insert(self.doc_cnt, tokens);
+        let term_ids = encoding.get_ids();
+        self.postings_writer.insert(self.doc_cnt, term_ids);
+        self.field_norms_writer
+            .insert(term_ids.len().try_into().unwrap());
         self.payload_writer.insert(id);
         self.doc_cnt = self
             .doc_cnt
             .checked_add(1)
             .unwrap_or_else(|| pgrx::error!("bm25 index can only store up to 2^32 - 1 documents"));
-        self.doc_term_cnt += tokens.len() as u64;
+        self.doc_term_cnt += term_ids.len() as u64;
     }
 
     pub fn finalize(&mut self) {
@@ -54,25 +55,18 @@ impl IndexBuilder {
         self.doc_term_cnt as f32 / self.doc_cnt as f32
     }
 
-    pub fn write_payload(&self, pager: &mut PageBuilder) -> anyhow::Result<()> {
-        pager
-            .write_all(self.payload_writer.data())
-            .map_err(Into::into)
+    pub fn write_payload(&self, pager: &mut PageBuilder) {
+        pager.write_all(self.payload_writer.data()).unwrap()
     }
 
-    pub fn write_field_norms(&self, pager: &mut PageBuilder) -> anyhow::Result<()> {
-        pager
-            .write_all(self.field_norms_writer.data())
-            .map_err(Into::into)
+    pub fn write_field_norms(&self, pager: &mut PageBuilder) {
+        pager.write_all(self.field_norms_writer.data()).unwrap()
     }
 
     // return [term_dict_blk, term_info_blk]
-    pub fn write_postings(
-        &self,
-        index: pgrx::pg_sys::Relation,
-    ) -> anyhow::Result<[pgrx::pg_sys::BlockNumber; 2]> {
-        let mut inverted_serializer = InvertedSerializer::new(index, self.doc_cnt, self.avg_dl())?;
-        self.postings_writer.serialize(&mut inverted_serializer)?;
+    pub fn write_postings(&self, index: pgrx::pg_sys::Relation) -> pgrx::pg_sys::BlockNumber {
+        let mut inverted_serializer = InvertedSerializer::new(index, self.doc_cnt, self.avg_dl());
+        self.postings_writer.serialize(&mut inverted_serializer);
         inverted_serializer.finalize()
     }
 }

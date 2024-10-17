@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     page::{page_read, MetaPageData, METAPAGE_BLKNO},
-    postings::{TermDictReader, TermInfoReader},
+    postings::TermInfoReader,
     weight::{idf, Bm25Weight},
 };
 
@@ -45,27 +45,25 @@ pub fn search_bm25query(target_doc: &str, query: Bm25Query) -> f32 {
         unsafe { (page.content.as_ptr() as *const MetaPageData).read() }
     };
 
-    let tokens = crate::token::BERT_BASE_UNCASED
-        .encode(query.query_str, false)
+    let query_encoding = crate::token::TOKENIZER
+        .encode_fast(query.query_str, false)
         .expect("failed to tokenize");
-    let tokens = tokens.get_tokens();
-    let target_tokens = crate::token::BERT_BASE_UNCASED
-        .encode(target_doc, false)
+    let query_term_ids = query_encoding.get_ids();
+    let target_encoding = crate::token::TOKENIZER
+        .encode_fast(target_doc, false)
         .expect("failed to tokenize");
-    let target_tokens = target_tokens.get_tokens();
-    let len = target_tokens.len().try_into().unwrap();
+    let target_term_ids = target_encoding.get_ids();
+    let len = target_term_ids.len().try_into().unwrap();
 
-    let term_dict_reader = TermDictReader::new(index, meta.term_dict_blkno).unwrap();
     let term_info_reader = TermInfoReader::new(index, meta.term_info_blkno);
     let mut scores = 0.0;
-    for token in tokens {
-        let tf = target_tokens
+    for &term_id in query_term_ids {
+        let tf = target_term_ids
             .iter()
-            .filter(|&t| t == token)
+            .filter(|&&t| t == term_id)
             .count()
             .try_into()
             .unwrap();
-        let term_id = term_dict_reader.get(token.as_ref()).unwrap();
         let term_info = term_info_reader.read(term_id);
         let idf = idf(meta.doc_cnt, term_info.docs);
         let bm25_weight = Bm25Weight::new(idf, meta.avg_dl);

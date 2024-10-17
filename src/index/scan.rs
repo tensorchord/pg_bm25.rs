@@ -115,15 +115,15 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_str: &str) -> Vec<u64> 
         unsafe { (page.content.as_ptr() as *const MetaPageData).read() }
     };
 
-    let inverted_reader = InvertedReader::new(index, &meta).unwrap();
-    let tokens = crate::token::BERT_BASE_UNCASED
-        .encode(query_str, false)
+    let inverted_reader = InvertedReader::new(index, &meta);
+    let encoding = crate::token::TOKENIZER
+        .encode_fast(query_str, false)
         .expect("failed to tokenize");
-    let tokens = tokens.get_tokens();
+    let term_ids = encoding.get_ids();
 
-    let posting_readers = tokens
+    let posting_readers = term_ids
         .iter()
-        .map(|token| inverted_reader.get_posting_reader(token.as_ref()).unwrap())
+        .filter_map(|&term_id| inverted_reader.get_posting_reader(term_id))
         .collect::<Vec<_>>();
 
     let fieldnorm_reader = FieldNormReader::new(index, meta.field_norms_blkno);
