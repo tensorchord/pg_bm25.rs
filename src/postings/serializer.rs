@@ -121,7 +121,7 @@ impl PostingSerializer {
 
     pub fn new_term(&mut self, doc_count: u32) {
         let idf = idf(self.total_doc_cnt, doc_count);
-        self.bm25_weight = Some(Bm25Weight::new(idf, self.avg_dl));
+        self.bm25_weight = Some(Bm25Weight::new(1, idf, self.avg_dl));
     }
 
     pub fn write_doc(&mut self, doc_id: u32, freq: u32) {

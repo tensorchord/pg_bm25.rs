@@ -1,3 +1,5 @@
+use crate::{datatype::Bm25VectorBorrowed, postings::TermInfoReader};
+
 const K1: f32 = 1.2;
 const B: f32 = 0.75;
 
@@ -8,8 +10,8 @@ pub struct Bm25Weight {
 }
 
 impl Bm25Weight {
-    pub fn new(idf: f32, avgdl: f32) -> Self {
-        let weight = idf * (1.0 + K1);
+    pub fn new(count: u32, idf: f32, avgdl: f32) -> Self {
+        let weight = count as f32 * idf * (1.0 + K1);
         Self { weight, avgdl }
     }
 
@@ -25,8 +27,44 @@ impl Bm25Weight {
     }
 }
 
-// ln { (N + 1) / (n(q) + 0.5) }
+// ln ( (N + 1) / (n(q) + 0.5) )
+#[inline]
 pub fn idf(doc_cnt: u32, doc_freq: u32) -> f32 {
     assert!(doc_cnt >= doc_freq);
     (((doc_cnt + 1) as f32) / (doc_freq as f32 + 0.5)).ln()
+}
+
+pub fn bm25_score_batch(
+    doc_cnt: u32,
+    avgdl: f32,
+    term_info_reader: &TermInfoReader,
+    target_vector: Bm25VectorBorrowed,
+    query_vector: Bm25VectorBorrowed,
+) -> f32 {
+    use std::cmp::Ordering;
+    let precompute = K1 * (1.0 - B + B * target_vector.doc_len() as f32 / avgdl);
+    let (li, lv) = (target_vector.indexes(), target_vector.values());
+    let (mut lp, ln) = (0, target_vector.len() as usize);
+    let (ri, rv) = (query_vector.indexes(), query_vector.values());
+    let (mut rp, rn) = (0, query_vector.len() as usize);
+    let mut scores: f32 = 0.0;
+    while lp < ln && rp < rn {
+        match Ord::cmp(&li[lp], &ri[rp]) {
+            Ordering::Equal => {
+                let idf = idf(doc_cnt, term_info_reader.read(li[lp]).docs);
+                let tf = lv[lp] as f32;
+                let res = rv[rp] as f32 * idf * (K1 + 1.0) * tf / (tf + precompute);
+                scores += res;
+                lp += 1;
+                rp += 1;
+            }
+            Ordering::Less => {
+                lp += 1;
+            }
+            Ordering::Greater => {
+                rp += 1;
+            }
+        }
+    }
+    scores
 }
