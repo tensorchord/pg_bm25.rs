@@ -1,0 +1,2 @@
+CREATE TYPE bm25vector;
+CREATE TYPE bm25query;

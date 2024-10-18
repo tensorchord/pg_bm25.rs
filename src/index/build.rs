@@ -2,6 +2,7 @@ use pgrx::{itemptr::item_pointer_to_u64, FromDatum, PgMemoryContexts};
 
 use crate::{
     builder::IndexBuilder,
+    datatype::Bm25VectorInput,
     page::{
         page_alloc, page_write, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO, META_VERSION,
     },
@@ -53,11 +54,11 @@ unsafe extern "C" fn build_callback(
     let state = &mut *(state.cast::<BuildState>());
     state.memctx.reset();
     state.memctx.switch_to(|_| {
-        let Some(docs) = <&[u8]>::from_datum(*datum, *is_null) else {
+        let Some(vector) = Bm25VectorInput::from_datum(*datum, *is_null) else {
             return;
         };
         let id = item_pointer_to_u64(unsafe { ctid.read() });
-        state.builder.insert(id, docs);
+        state.builder.insert(id, vector.as_ref());
         state.index_tuples += 1;
     });
     state.memctx.reset();

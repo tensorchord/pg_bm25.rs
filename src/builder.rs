@@ -1,11 +1,11 @@
 use std::io::Write;
 
 use crate::{
+    datatype::Bm25VectorBorrowed,
     field_norm::FieldNormsWriter,
     page::PageBuilder,
     payload::PayloadWriter,
     postings::{InvertedSerializer, PostingsWriter},
-    token,
 };
 
 pub struct IndexBuilder {
@@ -27,20 +27,15 @@ impl IndexBuilder {
         }
     }
 
-    pub fn insert(&mut self, id: u64, docs: &[u8]) {
-        let encoding = token::TOKENIZER
-            .encode_fast(std::str::from_utf8(docs).unwrap(), false)
-            .expect("failed to tokenize");
-        let term_ids = encoding.get_ids();
-        self.postings_writer.insert(self.doc_cnt, term_ids);
-        self.field_norms_writer
-            .insert(term_ids.len().try_into().unwrap());
+    pub fn insert(&mut self, id: u64, vector: Bm25VectorBorrowed) {
+        self.postings_writer.insert(self.doc_cnt, vector);
+        self.field_norms_writer.insert(vector.doc_len());
         self.payload_writer.insert(id);
         self.doc_cnt = self
             .doc_cnt
             .checked_add(1)
             .unwrap_or_else(|| pgrx::error!("bm25 index can only store up to 2^32 - 1 documents"));
-        self.doc_term_cnt += term_ids.len() as u64;
+        self.doc_term_cnt += vector.doc_len() as u64;
     }
 
     pub fn finalize(&mut self) {

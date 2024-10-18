@@ -12,6 +12,7 @@ pub const TERMINATED_DOC: u32 = u32::MAX;
 pub const COMPRESSION_BLOCK_SIZE: usize =
     <bitpacking::BitPacker4x as bitpacking::BitPacker>::BLOCK_LEN;
 
+#[repr(C, align(4))]
 #[derive(Clone, Copy)]
 pub struct TermInfo {
     pub docs: u32,

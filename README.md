@@ -7,10 +7,10 @@ a postgresql extension for bm25 ranking algorithm, inspired by [tantivy](https:/
 ```sql
 CREATE TABLE documents (
     id SERIAL PRIMARY KEY,
-    body TEXT
+    passage TEXT
 );
 
-INSERT INTO documents (body) VALUES 
+INSERT INTO documents (passage) VALUES 
 ('PostgreSQL is a powerful, open-source object-relational database system. It has over 15 years of active development.'),
 ('Full-text search is a technique for searching in plain-text documents or textual database fields. PostgreSQL supports this with tsvector.'),
 ('BM25 is a ranking function used by search engines to estimate the relevance of documents to a given search query.'),
@@ -22,9 +22,16 @@ INSERT INTO documents (body) VALUES
 ('Relational databases such as PostgreSQL can handle both structured and unstructured data.'),
 ('Effective search ranking algorithms, such as BM25, improve search results by understanding relevance.');
 
-CREATE INDEX documents_body_bm25 ON documents USING bm25 (body bm25_ops);
+ALTER TABLE documents ADD COLUMN embedding bm25vector;
 
-SELECT id, body, body <&> to_bm25query('documents_body_bm25', 'Postgresql') AS rank
+statement ok
+UPDATE documents SET embedding = tokenize(passage);
+
+statement ok
+CREATE INDEX documents_embedding_bm25 ON documents USING bm25 (embedding bm25_ops);
+
+statement ok
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;

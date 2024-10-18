@@ -1,7 +1,9 @@
-use pgrx::FromDatum;
+use std::num::NonZero;
+
+use pgrx::{prelude::PgHeapTuple, FromDatum};
 
 use crate::{
-    bm25query::Bm25Query,
+    datatype::{Bm25VectorBorrowed, Bm25VectorOutput},
     field_norm::{id_to_fieldnorm, FieldNormReader},
     guc::BM25_LIMIT,
     page::{page_read, MetaPageData, METAPAGE_BLKNO},
@@ -15,7 +17,7 @@ enum Scanner {
     Initial,
     Waiting {
         query_index: pgrx::PgRelation,
-        query_str: String,
+        query_vector: Bm25VectorOutput,
     },
     Scanned {
         cached_results: Vec<u64>,
@@ -52,15 +54,20 @@ pub unsafe extern "C" fn amrescan(
     let data = (*scan).orderByData;
     let value = (*data).sk_argument;
     let is_null = ((*data).sk_flags & pgrx::pg_sys::SK_ISNULL as i32) != 0;
-    let bm25_query = Bm25Query::from_datum(value, is_null).unwrap();
+    let bm25_query = PgHeapTuple::from_datum(value, is_null).unwrap();
+    let index_oid = bm25_query
+        .get_by_index(NonZero::new(1).unwrap())
+        .unwrap()
+        .unwrap();
+    let query_vector = bm25_query
+        .get_by_index(NonZero::new(2).unwrap())
+        .unwrap()
+        .unwrap();
 
     let scanner = (*scan).opaque.cast::<Scanner>().as_mut().unwrap();
     *scanner = Scanner::Waiting {
-        query_index: pgrx::PgRelation::with_lock(
-            bm25_query.index_oid,
-            pgrx::pg_sys::AccessShareLock as _,
-        ),
-        query_str: bm25_query.query_str,
+        query_index: pgrx::PgRelation::with_lock(index_oid, pgrx::pg_sys::AccessShareLock as _),
+        query_vector,
     };
 }
 
@@ -78,9 +85,9 @@ pub unsafe extern "C" fn amgettuple(
         Scanner::Initial => return false,
         Scanner::Waiting {
             query_index,
-            query_str,
+            query_vector,
         } => {
-            let results = scan_main(query_index.as_ptr(), query_str);
+            let results = scan_main(query_index.as_ptr(), query_vector.as_ref());
             *scanner = Scanner::Scanned {
                 cached_results: results,
             };
@@ -109,30 +116,30 @@ pub unsafe extern "C" fn amendscan(scan: pgrx::pg_sys::IndexScanDesc) {
 }
 
 // return top-k results
-unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_str: &str) -> Vec<u64> {
+unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorrowed) -> Vec<u64> {
     let meta = {
         let page = page_read(index, METAPAGE_BLKNO);
         unsafe { (page.content.as_ptr() as *const MetaPageData).read() }
     };
 
     let inverted_reader = InvertedReader::new(index, &meta);
-    let encoding = crate::token::TOKENIZER
-        .encode_fast(query_str, false)
-        .expect("failed to tokenize");
-    let term_ids = encoding.get_ids();
 
-    let posting_readers = term_ids
+    let posting_readers = query_vector
+        .indexes()
         .iter()
-        .filter_map(|&term_id| inverted_reader.get_posting_reader(term_id))
+        .zip(query_vector.values())
+        .filter_map(|(&term_id, &term_tf)| {
+            Some((inverted_reader.get_posting_reader(term_id)?, term_tf))
+        })
         .collect::<Vec<_>>();
 
     let fieldnorm_reader = FieldNormReader::new(index, meta.field_norms_blkno);
     let mut results;
     if posting_readers.len() == 1 {
-        let idf = idf(meta.doc_cnt, posting_readers[0].doc_cnt());
-        let bm25_weight = Bm25Weight::new(idf, meta.avg_dl);
+        let idf = idf(meta.doc_cnt, posting_readers[0].0.doc_cnt());
+        let bm25_weight = Bm25Weight::new(posting_readers[0].1, idf, meta.avg_dl);
         let scorer = PostingScorer {
-            postings: posting_readers[0].get_posting(),
+            postings: posting_readers[0].0.get_posting(),
             fieldnorm_reader: &fieldnorm_reader,
             weight: bm25_weight,
         };
@@ -140,9 +147,9 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_str: &str) -> Vec<u64> 
     } else {
         let scorers = posting_readers
             .iter()
-            .map(|r| {
+            .map(|(r, tf)| {
                 let idf = idf(meta.doc_cnt, r.doc_cnt());
-                let bm25_weight = Bm25Weight::new(idf, meta.avg_dl);
+                let bm25_weight = Bm25Weight::new(*tf, idf, meta.avg_dl);
                 PostingScorerWithMax {
                     postings: r.get_posting(),
                     weight: bm25_weight,

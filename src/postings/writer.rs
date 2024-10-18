@@ -1,5 +1,5 @@
 use super::InvertedSerializer;
-use crate::{token::VOCAB_LEN, utils::vint};
+use crate::{datatype::Bm25VectorBorrowed, token::VOCAB_LEN, utils::vint};
 
 // postings in ram
 pub struct PostingsWriter {
@@ -13,14 +13,14 @@ impl PostingsWriter {
         }
     }
 
-    pub fn insert(&mut self, doc_id: u32, term_ids: &[u32]) {
-        for &term_id in term_ids {
+    pub fn insert(&mut self, doc_id: u32, vector: Bm25VectorBorrowed) {
+        for (&term_id, &tf) in vector.indexes().iter().zip(vector.values()) {
             let tf_recorder = &mut self.term_index[term_id as usize];
             if tf_recorder.current_doc() != doc_id {
                 tf_recorder.try_close_doc();
                 tf_recorder.new_doc(doc_id);
             }
-            tf_recorder.record();
+            tf_recorder.record(tf);
         }
     }
 
@@ -64,14 +64,14 @@ impl TFRecorder {
     }
 
     fn new_doc(&mut self, doc_id: u32) {
-        let delta = doc_id - self.current_doc;
+        let delta = doc_id.wrapping_sub(self.current_doc);
         self.total_docs += 1;
         self.current_doc = doc_id;
         vint::encode_vint32(delta, &mut self.buffer).unwrap();
     }
 
-    fn record(&mut self) {
-        self.current_tf += 1;
+    fn record(&mut self, count: u32) {
+        self.current_tf += count;
     }
 
     fn try_close_doc(&mut self) {
@@ -91,7 +91,7 @@ impl TFRecorder {
             }
             let delta_doc_id = vint::decode_vint32(&mut buffer);
             let tf = vint::decode_vint32(&mut buffer);
-            doc_id += delta_doc_id;
+            doc_id = doc_id.wrapping_add(delta_doc_id);
             Some((doc_id, tf))
         })
     }
