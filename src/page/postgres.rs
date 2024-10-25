@@ -4,14 +4,13 @@ use std::{
     ptr::NonNull,
 };
 
-use pgrx::pg_sys::BufferManagerRelation;
-
 const _: () = {
     assert!(std::mem::size_of::<pgrx::pg_sys::PageHeaderData>() % 8 == 0);
     assert!(std::mem::size_of::<Bm25PageOpaqueData>() % 8 == 0);
     assert!(std::mem::size_of::<PageData>() == pgrx::pg_sys::BLCKSZ as usize);
 };
 
+pub const P_NEW: pgrx::pg_sys::BlockNumber = pgrx::pg_sys::InvalidBlockNumber;
 pub const METAPAGE_BLKNO: pgrx::pg_sys::BlockNumber = 0;
 pub const BM25_PAGE_ID: u16 = 0xFF88;
 
@@ -36,7 +35,7 @@ pub struct Bm25PageOpaqueData {
 #[repr(C, align(8))]
 pub struct PageData {
     pub header: pgrx::pg_sys::PageHeaderData,
-    pub content: [u8; bm25_page_size()],
+    content: [u8; bm25_page_size()],
     pub opaque: Bm25PageOpaqueData,
 }
 
@@ -190,6 +189,7 @@ pub fn page_write(
     }
 }
 
+#[cfg(any(feature = "pg16", feature = "pg17"))]
 pub fn page_alloc(
     relation: pgrx::pg_sys::Relation,
     flag: PageFlags,
@@ -197,6 +197,7 @@ pub fn page_alloc(
 ) -> PageWriteGuard {
     unsafe {
         use pgrx::pg_sys::{
+            BufferManagerRelation,
             ExtendBufferedFlags::{EB_LOCK_FIRST, EB_SKIP_EXTENSION_LOCK},
             ExtendBufferedRel, ForkNumber, GenericXLogRegisterBuffer, GenericXLogStart,
             GENERIC_XLOG_FULL_IMAGE,
@@ -215,6 +216,38 @@ pub fn page_alloc(
             std::ptr::null_mut(),
             arg_flags,
         );
+        let state = GenericXLogStart(relation);
+        let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);
+        let mut page = NonNull::new(page.cast()).expect("failed to get page");
+        PageData::init_mut(page.as_mut(), flag);
+        PageWriteGuard {
+            buf,
+            page: page.cast(),
+            state,
+        }
+    }
+}
+
+#[cfg(any(feature = "pg14", feature = "pg15"))]
+pub fn page_alloc(
+    relation: pgrx::pg_sys::Relation,
+    flag: PageFlags,
+    skip_lock_rel: bool,
+) -> PageWriteGuard {
+    unsafe {
+        use pgrx::pg_sys::{
+            ExclusiveLock, GenericXLogRegisterBuffer, GenericXLogStart, LockBuffer,
+            LockRelationForExtension, ReadBuffer, UnlockRelationForExtension,
+            BUFFER_LOCK_EXCLUSIVE, GENERIC_XLOG_FULL_IMAGE,
+        };
+        if !skip_lock_rel {
+            LockRelationForExtension(relation, ExclusiveLock as _);
+        }
+        let buf = ReadBuffer(relation, P_NEW);
+        LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE as _);
+        if !skip_lock_rel {
+            UnlockRelationForExtension(relation, ExclusiveLock as _);
+        }
         let state = GenericXLogStart(relation);
         let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);
         let mut page = NonNull::new(page.cast()).expect("failed to get page");

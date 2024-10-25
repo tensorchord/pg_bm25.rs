@@ -17,8 +17,8 @@ pub struct InvertedSerializer {
 }
 
 impl InvertedSerializer {
-    pub fn new(index: pgrx::pg_sys::Relation, total_doc_cnt: u32, avg_dl: f32) -> Self {
-        let postings_serializer = PostingSerializer::new(index, total_doc_cnt, avg_dl);
+    pub fn new(index: pgrx::pg_sys::Relation, total_doc_cnt: u32, avgdl: f32) -> Self {
+        let postings_serializer = PostingSerializer::new(index, total_doc_cnt, avgdl);
         let term_info_serializer = TermInfoSerializer::new(index);
         Self {
             postings_serializer,
@@ -29,7 +29,7 @@ impl InvertedSerializer {
 
     pub fn new_term(&mut self, doc_count: u32) {
         self.current_term_info = TermInfo {
-            docs: doc_count,
+            doc_count,
             postings_blkno: pgrx::pg_sys::InvalidBlockNumber,
         };
         if doc_count != 0 {
@@ -42,7 +42,7 @@ impl InvertedSerializer {
     }
 
     pub fn close_term(&mut self) {
-        if self.current_term_info.docs != 0 {
+        if self.current_term_info.doc_count != 0 {
             self.current_term_info.postings_blkno = self.postings_serializer.close_term();
         }
         self.term_info_serializer.push(self.current_term_info);
@@ -100,7 +100,7 @@ impl PostingSerializer {
     pub fn new(index: pgrx::pg_sys::Relation, total_doc_cnt: u32, avg_dl: f32) -> Self {
         let filednorm_blkno = unsafe {
             let meta_page = page_read(index, METAPAGE_BLKNO);
-            (*meta_page.content.as_ptr().cast::<MetaPageData>()).field_norms_blkno
+            (*meta_page.data().as_ptr().cast::<MetaPageData>()).field_norms_blkno
         };
 
         Self {
@@ -143,12 +143,19 @@ impl PostingSerializer {
         }
         let mut pager = PageBuilder::new(self.index, PageFlags::POSTINGS, true);
         pager
-            .write_all(&u32::try_from(self.skip_write.len()).unwrap().to_le_bytes())
-            .unwrap();
-        pager
             .write_all(bytemuck::cast_slice(self.skip_write.as_slice()))
             .unwrap();
-        pager.write_all(&self.posting_write).unwrap();
+        let mut offset = 0;
+        for skip in self.skip_write.iter().take(self.skip_write.len() - 1) {
+            let len = skip.block_size();
+            pager
+                .write_all_no_cross(&self.posting_write[offset..][..len])
+                .unwrap();
+            offset += len;
+        }
+        pager
+            .write_all_no_cross(&self.posting_write[offset..])
+            .unwrap();
         let blkno = pager.finalize();
         self.last_doc_id = 0;
         self.bm25_weight = None;
@@ -159,6 +166,8 @@ impl PostingSerializer {
 
     fn flush_block(&mut self) {
         assert!(self.block_size == COMPRESSION_BLOCK_SIZE);
+
+        let (blockwand_tf, blockwand_fieldnorm_id) = self.block_wand();
 
         // doc_id
         let (docid_bits, docid_block) = self
@@ -176,11 +185,8 @@ impl PostingSerializer {
             .compress_block_unsorted(&self.term_freqs[..self.block_size]);
         self.posting_write.extend_from_slice(term_freq_block);
 
-        let (blockwand_tf, blockwand_fieldnorm_id) = self.block_wand();
-        let tf_sum = self.doc_ids[..self.block_size].iter().sum();
         self.skip_write.push(SkipBlock {
             last_doc: self.last_doc_id,
-            tf_sum,
             docid_bits,
             tf_bits,
             blockwand_tf,
@@ -193,6 +199,8 @@ impl PostingSerializer {
 
     fn flush_block_unfull(&mut self) {
         assert!(self.block_size > 0);
+
+        let (blockwand_tf, blockwand_fieldnorm_id) = self.block_wand();
 
         // doc_id
         let docid_block = self
@@ -210,11 +218,8 @@ impl PostingSerializer {
             .compress_vint_unsorted(&self.term_freqs[..self.block_size]);
         self.posting_write.extend_from_slice(term_freq_block);
 
-        let (blockwand_tf, blockwand_fieldnorm_id) = self.block_wand();
-        let tf_sum = self.doc_ids[..self.block_size].iter().sum();
         self.skip_write.push(SkipBlock {
             last_doc: self.last_doc_id,
-            tf_sum,
             docid_bits: 0,
             tf_bits: 0,
             blockwand_tf,

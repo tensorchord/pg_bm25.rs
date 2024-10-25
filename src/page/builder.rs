@@ -1,5 +1,7 @@
 use std::ops::DerefMut;
 
+use crate::page::bm25_page_size;
+
 use super::{page_alloc, PageFlags, PageWriteGuard};
 
 /// Utility to build pages like a file
@@ -32,6 +34,7 @@ impl PageBuilder {
     fn change_page(&mut self) {
         let mut old_page = self.page.take().unwrap();
         let new_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+        assert!(old_page.blkno() + 1 == new_page.blkno());
         old_page.opaque.next_blkno = new_page.blkno();
         self.page = Some(new_page);
     }
@@ -48,6 +51,23 @@ impl PageBuilder {
             self.page = Some(page);
         }
         self.page.as_mut().unwrap().deref_mut().freespace_mut()
+    }
+
+    // it will make sure the data is on the same page
+    pub fn write_all_no_cross(&mut self, data: &[u8]) -> std::io::Result<()> {
+        assert!(data.len() <= bm25_page_size());
+        let mut space = self.freespace_mut();
+        if space.len() < data.len() {
+            self.change_page();
+            space = self.freespace_mut();
+        }
+        space[..data.len()].copy_from_slice(data);
+        let space_len = space.len();
+        *self.offset() += data.len() as u16;
+        if data.len() == space_len {
+            self.change_page();
+        }
+        Ok(())
     }
 }
 

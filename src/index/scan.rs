@@ -8,7 +8,7 @@ use crate::{
     guc::BM25_LIMIT,
     page::{page_read, MetaPageData, METAPAGE_BLKNO},
     payload::PayloadReader,
-    postings::{InvertedReader, Posting, TERMINATED_DOC},
+    postings::{InvertedReader, PostingReader, TERMINATED_DOC},
     utils::topk_computer::TopKComputer,
     weight::{idf, Bm25Weight},
 };
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn amendscan(scan: pgrx::pg_sys::IndexScanDesc) {
 unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorrowed) -> Vec<u64> {
     let meta = {
         let page = page_read(index, METAPAGE_BLKNO);
-        unsafe { (page.content.as_ptr() as *const MetaPageData).read() }
+        unsafe { (page.data().as_ptr() as *const MetaPageData).read() }
     };
 
     let inverted_reader = InvertedReader::new(index, &meta);
@@ -136,22 +136,21 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
     let fieldnorm_reader = FieldNormReader::new(index, meta.field_norms_blkno);
     let mut results;
     if posting_readers.len() == 1 {
-        let idf = idf(meta.doc_cnt, posting_readers[0].0.doc_cnt());
+        let idf = idf(meta.doc_cnt, posting_readers[0].0.doc_count());
         let bm25_weight = Bm25Weight::new(posting_readers[0].1, idf, meta.avg_dl);
         let scorer = PostingScorer {
-            postings: posting_readers[0].0.get_posting(),
-            fieldnorm_reader: &fieldnorm_reader,
+            postings: posting_readers.into_iter().next().unwrap().0,
             weight: bm25_weight,
         };
-        results = block_wand_single(scorer);
+        results = block_wand_single(scorer, &fieldnorm_reader);
     } else {
         let scorers = posting_readers
-            .iter()
+            .into_iter()
             .map(|(r, tf)| {
-                let idf = idf(meta.doc_cnt, r.doc_cnt());
-                let bm25_weight = Bm25Weight::new(*tf, idf, meta.avg_dl);
+                let idf = idf(meta.doc_cnt, r.doc_count());
+                let bm25_weight = Bm25Weight::new(tf, idf, meta.avg_dl);
                 PostingScorerWithMax {
-                    postings: r.get_posting(),
+                    postings: r,
                     weight: bm25_weight,
                     max_score: bm25_weight.max_score(),
                 }
@@ -168,13 +167,15 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
         .collect()
 }
 
-struct PostingScorer<'a> {
-    postings: Posting<'a>,
-    fieldnorm_reader: &'a FieldNormReader,
+struct PostingScorer {
+    postings: PostingReader,
     weight: Bm25Weight,
 }
 
-fn block_wand_single(mut scorer: PostingScorer) -> TopKComputer {
+fn block_wand_single(
+    mut scorer: PostingScorer,
+    fieldnorm_reader: &FieldNormReader,
+) -> TopKComputer {
     let mut results = TopKComputer::new(BM25_LIMIT.get() as usize);
     'outer: loop {
         while scorer.postings.block_max_score(&scorer.weight) <= results.threshold() {
@@ -186,7 +187,7 @@ fn block_wand_single(mut scorer: PostingScorer) -> TopKComputer {
         loop {
             let doc_id = scorer.postings.doc_id();
             let tf = scorer.postings.term_freq();
-            let fieldnorm_id = scorer.fieldnorm_reader.read(doc_id);
+            let fieldnorm_id = fieldnorm_reader.read(doc_id);
             let fieldnorm = id_to_fieldnorm(fieldnorm_id);
             let score = scorer.weight.score(fieldnorm, tf);
             results.push(score, scorer.postings.doc_id());
@@ -201,8 +202,9 @@ fn block_wand_single(mut scorer: PostingScorer) -> TopKComputer {
     results
 }
 
-struct PostingScorerWithMax<'a> {
-    postings: Posting<'a>,
+#[derive(Debug)]
+struct PostingScorerWithMax {
+    postings: PostingReader,
     weight: Bm25Weight,
     max_score: f32,
 }
@@ -255,19 +257,20 @@ fn block_wand(
 fn find_pivot_doc(scorers: &[PostingScorerWithMax], threshold: f32) -> Option<(usize, usize, u32)> {
     let mut max_score = 0.0;
     let mut before_pivot_len = 0;
-    let mut pivot_doc = TERMINATED_DOC;
+    let mut pivot_doc = u32::MAX;
     while before_pivot_len < scorers.len() {
-        let term_scorer = &scorers[before_pivot_len];
-        max_score += term_scorer.max_score;
+        let scorer = &scorers[before_pivot_len];
+        max_score += scorer.max_score;
         if max_score > threshold {
-            pivot_doc = term_scorer.postings.doc_id();
+            pivot_doc = scorer.postings.doc_id();
             break;
         }
         before_pivot_len += 1;
     }
-    if pivot_doc == TERMINATED_DOC {
+    if pivot_doc == u32::MAX {
         return None;
     }
+
     let mut pivot_len = before_pivot_len + 1;
     pivot_len += scorers[pivot_len..]
         .iter()
@@ -296,7 +299,7 @@ fn block_max_was_too_low_advance_one_scorer(
     }
     doc_to_seek_after = doc_to_seek_after.saturating_add(1);
 
-    for scorer in &scorers[pivot_len..] {
+    for scorer in &mut scorers[pivot_len..] {
         if scorer.postings.doc_id() <= doc_to_seek_after {
             doc_to_seek_after = scorer.postings.doc_id();
         }
@@ -339,5 +342,5 @@ fn advance_all_scorers_on_pivot(term_scorers: &mut Vec<PostingScorerWithMax>, pi
         scorer.postings.advance();
     }
     term_scorers.retain(|scorer| !scorer.postings.completed());
-    term_scorers.sort_by_key(|scorer| scorer.postings.doc_id());
+    term_scorers.sort_unstable_by_key(|scorer| scorer.postings.doc_id());
 }

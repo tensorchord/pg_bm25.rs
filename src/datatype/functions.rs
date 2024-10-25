@@ -53,7 +53,7 @@ pub fn search_bm25query(
         unsafe { pgrx::PgRelation::with_lock(index_oid, pgrx::pg_sys::AccessShareLock as _) };
     let meta = {
         let page = page_read(index.as_ptr(), METAPAGE_BLKNO);
-        unsafe { (page.content.as_ptr() as *const MetaPageData).read() }
+        unsafe { (page.data().as_ptr() as *const MetaPageData).read() }
     };
 
     let term_info_reader = TermInfoReader::new(index.as_ptr(), meta.term_info_blkno);

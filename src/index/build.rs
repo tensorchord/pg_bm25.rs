@@ -75,7 +75,7 @@ unsafe fn init_metapage(state: &BuildState) {
     let mut meta_page = page_alloc(state.index, PageFlags::META, false);
     assert_eq!(meta_page.blkno(), METAPAGE_BLKNO);
     meta_page
-        .content
+        .freespace_mut()
         .as_mut_ptr()
         .cast::<MetaPageData>()
         .write(MetaPageData {
@@ -102,7 +102,7 @@ unsafe fn write_down(state: &BuildState) {
     {
         // postings need field norms
         let mut meta_page = page_write(state.index, METAPAGE_BLKNO);
-        let metadata = &mut *meta_page.content.as_mut_ptr().cast::<MetaPageData>();
+        let metadata = &mut *meta_page.data_mut().as_mut_ptr().cast::<MetaPageData>();
         metadata.payload_blkno = payload_blk;
         metadata.field_norms_blkno = field_norms_blk;
     }
@@ -111,7 +111,7 @@ unsafe fn write_down(state: &BuildState) {
     let term_info_blk = state.builder.write_postings(state.index);
     {
         let mut meta_page = page_write(state.index, METAPAGE_BLKNO);
-        let metadata = &mut *meta_page.content.as_mut_ptr().cast::<MetaPageData>();
+        let metadata = &mut *meta_page.data_mut().as_mut_ptr().cast::<MetaPageData>();
         metadata.term_info_blkno = term_info_blk;
     }
 }
