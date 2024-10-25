@@ -3,9 +3,9 @@ use crate::{datatype::Bm25VectorBorrowed, postings::TermInfoReader};
 const K1: f32 = 1.2;
 const B: f32 = 0.75;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Bm25Weight {
-    weight: f32, // idf * (1 + K1)
+    weight: f32, // idf * (1 + K1) * term_count
     avgdl: f32,
 }
 
@@ -30,7 +30,6 @@ impl Bm25Weight {
 // ln ( (N + 1) / (n(q) + 0.5) )
 #[inline]
 pub fn idf(doc_cnt: u32, doc_freq: u32) -> f32 {
-    assert!(doc_cnt >= doc_freq);
     (((doc_cnt + 1) as f32) / (doc_freq as f32 + 0.5)).ln()
 }
 
@@ -51,7 +50,7 @@ pub fn bm25_score_batch(
     while lp < ln && rp < rn {
         match Ord::cmp(&li[lp], &ri[rp]) {
             Ordering::Equal => {
-                let idf = idf(doc_cnt, term_info_reader.read(li[lp]).docs);
+                let idf = idf(doc_cnt, term_info_reader.read(li[lp]).doc_count);
                 let tf = lv[lp] as f32;
                 let res = rv[rp] as f32 * idf * (K1 + 1.0) * tf / (tf + precompute);
                 scores += res;

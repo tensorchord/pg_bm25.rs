@@ -50,7 +50,7 @@ struct TFRecorder {
 }
 
 impl TFRecorder {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             buffer: Vec::new(),
             current_doc: u32::MAX,

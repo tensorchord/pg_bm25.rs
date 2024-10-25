@@ -1,5 +1,3 @@
-use aligned_vec::AVec;
-
 use crate::page::bm25_page_size;
 
 use super::{page_read, PageReadGuard};
@@ -24,7 +22,7 @@ impl<T: Copy> ContinuousPageReader<T> {
         let blkno = self.start_blkno + blkno_offset as pgrx::pg_sys::BlockNumber;
         let offset = (idx % Self::page_count() as u32) as usize;
         let page = page_read(self.index, blkno);
-        unsafe { page.content.as_ptr().cast::<T>().add(offset).read() }
+        unsafe { page.data().as_ptr().cast::<T>().add(offset).read() }
     }
 
     const fn page_count() -> usize {
@@ -50,34 +48,12 @@ impl PageReader {
         }
     }
 
-    pub fn read_to_end_aligned<A: aligned_vec::Alignment>(
-        &mut self,
-        buf: &mut AVec<u8, A>,
-    ) -> std::io::Result<usize> {
-        if self.blkno == pgrx::pg_sys::InvalidBlockNumber {
-            return Ok(0);
-        }
-        let mut blkno = self.blkno;
-        self.blkno = pgrx::pg_sys::InvalidBlockNumber;
-        let mut inner = self
-            .inner
-            .take()
-            .unwrap_or_else(|| page_read(self.index, blkno));
-        let mut read_len = 0;
-        loop {
-            let data = &inner.data()[self.offset..];
-            buf.extend_from_slice(data);
-            read_len += data.len();
-            blkno = inner.opaque.next_blkno;
-            self.offset = 0;
-            if blkno == pgrx::pg_sys::InvalidBlockNumber {
-                break;
-            } else {
-                inner = page_read(self.index, blkno);
-            }
-        }
+    pub fn blkno(&self) -> pgrx::pg_sys::BlockNumber {
+        self.blkno
+    }
 
-        Ok(read_len)
+    pub fn offset(&self) -> usize {
+        self.offset
     }
 }
 
@@ -97,6 +73,7 @@ impl std::io::Read for PageReader {
         if to_read == data.len() {
             self.blkno = inner.opaque.next_blkno;
             self.offset = 0;
+            self.inner = None;
         }
         Ok(to_read)
     }
