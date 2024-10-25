@@ -24,15 +24,53 @@ INSERT INTO documents (passage) VALUES
 
 ALTER TABLE documents ADD COLUMN embedding bm25vector;
 
-statement ok
 UPDATE documents SET embedding = tokenize(passage);
 
-statement ok
 CREATE INDEX documents_embedding_bm25 ON documents USING bm25 (embedding bm25_ops);
 
-statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'PostgreSQL') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
 ```
+
+## Installation
+
+1. Setup development environment.
+
+You can follow the docs about [`pgvecto.rs`](https://docs.pgvecto.rs/developers/development.html).
+
+2. Install the extension.
+
+```sh
+cargo pgrx install --sudo --release
+```
+
+3. Configure your PostgreSQL by modifying the `shared_preload_libraries` and `search_path` to include the extension.
+
+```sh
+psql -U postgres -c 'ALTER SYSTEM SET shared_preload_libraries = "pg_bm25.so"'
+psql -U postgres -c 'ALTER SYSTEM SET search_path TO "$user", public, bm25_catalog'
+# You need restart the PostgreSQL cluster to take effects.
+sudo systemctl restart postgresql.service   # for pg_bm25.rs running with systemd
+```
+
+4. Connect to the database and enable the extension.
+
+```sql
+DROP EXTENSION IF EXISTS pg_bm25;
+CREATE EXTENSION pg_bm25;
+```
+
+## Reference
+
+### Data Types
+
+- `bm25vector`: A vector type for storing BM25 tokenized text.
+- `bm25query`: A query type for BM25 ranking.
+
+### Functions
+
+- `tokenize(text) RETURNS bm25vector`: Tokenize the input text into a BM25 vector.
+- `to_bm25query(index_name regclass, query text) RETURNS bm25query`: Convert the input text into a BM25 query.
+- `bm25vector <&> bm25query RETURNS float4`: Calculate the **negative** BM25 score between the BM25 vector and query.
