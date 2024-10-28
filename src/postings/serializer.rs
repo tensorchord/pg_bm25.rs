@@ -3,7 +3,7 @@ use std::io::Write;
 use crate::{
     field_norm::{id_to_fieldnorm, FieldNormReader, MAX_FIELD_NORM},
     page::{page_read, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO},
-    token::VOCAB_LEN,
+    token::vocab_len,
     utils::compress_block::BlockEncoder,
     weight::{idf, Bm25Weight},
 };
@@ -62,7 +62,7 @@ impl TermInfoSerializer {
     pub fn new(index: pgrx::pg_sys::Relation) -> Self {
         Self {
             index,
-            term_infos: Vec::with_capacity(*VOCAB_LEN as usize),
+            term_infos: Vec::with_capacity(vocab_len() as usize),
         }
     }
 

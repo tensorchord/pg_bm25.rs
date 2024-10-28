@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+use crate::guc::ENABLE_INDEX;
+
 use super::{
     build::{ambuild, ambuildempty},
     delete::ambulkdelete,
@@ -59,7 +61,7 @@ pub unsafe extern "C" fn amcostestimate(
     index_correlation: *mut f64,
     index_pages: *mut f64,
 ) {
-    if (*path).indexorderbys.is_null() && (*path).indexclauses.is_null() {
+    if !ENABLE_INDEX.get() || ((*path).indexorderbys.is_null() && (*path).indexclauses.is_null()) {
         *index_startup_cost = f64::MAX;
         *index_total_cost = f64::MAX;
         *index_selectivity = 0.0;

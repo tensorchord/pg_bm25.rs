@@ -1,5 +1,5 @@
 use super::InvertedSerializer;
-use crate::{datatype::Bm25VectorBorrowed, token::VOCAB_LEN, utils::vint};
+use crate::{datatype::Bm25VectorBorrowed, token::vocab_len, utils::vint};
 
 // postings in ram
 pub struct PostingsWriter {
@@ -9,7 +9,7 @@ pub struct PostingsWriter {
 impl PostingsWriter {
     pub fn new() -> Self {
         Self {
-            term_index: (0..*VOCAB_LEN).map(|_| TFRecorder::new()).collect(),
+            term_index: (0..vocab_len()).map(|_| TFRecorder::new()).collect(),
         }
     }
 

@@ -13,12 +13,9 @@ use super::{
 
 #[pgrx::pg_extern(immutable, strict, parallel_safe)]
 pub fn tokenize(text: &str) -> Bm25VectorOutput {
-    let encoding = crate::token::TOKENIZER
-        .encode_fast(text, false)
-        .expect("failed to tokenize");
-    let term_ids = encoding.get_ids();
+    let term_ids = crate::token::tokenize(text);
     let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-    for &term_id in term_ids {
+    for &term_id in term_ids.as_ref() {
         *map.entry(term_id).or_insert(0) += 1;
     }
     let mut doc_len: u32 = 0;
