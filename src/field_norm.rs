@@ -1,4 +1,4 @@
-use crate::page::ContinuousPageReader;
+use crate::page::VirtualPageReader;
 
 pub struct FieldNormsWriter {
     buffer: Vec<u8>,
@@ -18,15 +18,17 @@ impl FieldNormsWriter {
     }
 }
 
-pub struct FieldNormReader(ContinuousPageReader<u8>);
+pub struct FieldNormReader(VirtualPageReader);
 
 impl FieldNormReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
-        Self(ContinuousPageReader::new(index, blkno))
+        Self(VirtualPageReader::new(index, blkno))
     }
 
     pub fn read(&self, doc_id: u32) -> u8 {
-        self.0.read(doc_id)
+        let mut buf = [0u8; 1];
+        self.0.read_at(doc_id, &mut buf);
+        buf[0]
     }
 }
 

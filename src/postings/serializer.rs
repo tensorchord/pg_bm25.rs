@@ -1,34 +1,38 @@
-use std::io::Write;
-
 use crate::{
     field_norm::{id_to_fieldnorm, FieldNormReader, MAX_FIELD_NORM},
-    page::{page_read, MetaPageData, PageBuilder, PageFlags, METAPAGE_BLKNO},
+    page::{PageFlags, PageWriter},
     token::vocab_len,
     utils::compress_block::BlockEncoder,
     weight::{idf, Bm25Weight},
 };
 
-use super::{SkipBlock, TermInfo, COMPRESSION_BLOCK_SIZE};
+use super::{PostingTermInfo, SkipBlock, COMPRESSION_BLOCK_SIZE};
 
 pub struct InvertedSerializer {
     postings_serializer: PostingSerializer,
-    term_info_serializer: TermInfoSerializer,
-    current_term_info: TermInfo,
+    term_info_serializer: PostingTermInfoSerializer,
+    current_term_info: PostingTermInfo,
 }
 
 impl InvertedSerializer {
-    pub fn new(index: pgrx::pg_sys::Relation, total_doc_cnt: u32, avgdl: f32) -> Self {
-        let postings_serializer = PostingSerializer::new(index, total_doc_cnt, avgdl);
-        let term_info_serializer = TermInfoSerializer::new(index);
+    pub fn new(
+        index: pgrx::pg_sys::Relation,
+        total_doc_cnt: u32,
+        avgdl: f32,
+        fieldnorm_reader: FieldNormReader,
+    ) -> Self {
+        let postings_serializer =
+            PostingSerializer::new(index, total_doc_cnt, avgdl, fieldnorm_reader);
+        let term_info_serializer = PostingTermInfoSerializer::new(index);
         Self {
             postings_serializer,
             term_info_serializer,
-            current_term_info: TermInfo::default(),
+            current_term_info: PostingTermInfo::default(),
         }
     }
 
     pub fn new_term(&mut self, doc_count: u32) {
-        self.current_term_info = TermInfo {
+        self.current_term_info = PostingTermInfo {
             doc_count,
             postings_blkno: pgrx::pg_sys::InvalidBlockNumber,
         };
@@ -48,17 +52,18 @@ impl InvertedSerializer {
         self.term_info_serializer.push(self.current_term_info);
     }
 
+    /// return term_info_blkno
     pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
         self.term_info_serializer.finalize()
     }
 }
 
-struct TermInfoSerializer {
+struct PostingTermInfoSerializer {
     index: pgrx::pg_sys::Relation,
-    term_infos: Vec<TermInfo>,
+    term_infos: Vec<PostingTermInfo>,
 }
 
-impl TermInfoSerializer {
+impl PostingTermInfoSerializer {
     pub fn new(index: pgrx::pg_sys::Relation) -> Self {
         Self {
             index,
@@ -66,15 +71,13 @@ impl TermInfoSerializer {
         }
     }
 
-    pub fn push(&mut self, term_info: TermInfo) {
+    pub fn push(&mut self, term_info: PostingTermInfo) {
         self.term_infos.push(term_info);
     }
 
     pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
-        let mut pager = PageBuilder::new(self.index, PageFlags::TERM_INFO, true);
-        pager
-            .write_all(bytemuck::cast_slice(&self.term_infos))
-            .unwrap();
+        let mut pager = PageWriter::new(self.index, PageFlags::POSTINGS, true);
+        pager.write(bytemuck::cast_slice(&self.term_infos));
         pager.finalize()
     }
 }
@@ -93,16 +96,16 @@ struct PostingSerializer {
     avg_dl: f32,
     total_doc_cnt: u32,
     bm25_weight: Option<Bm25Weight>,
-    filednorm_reader: FieldNormReader,
+    fieldnorm_reader: FieldNormReader,
 }
 
 impl PostingSerializer {
-    pub fn new(index: pgrx::pg_sys::Relation, total_doc_cnt: u32, avg_dl: f32) -> Self {
-        let filednorm_blkno = unsafe {
-            let meta_page = page_read(index, METAPAGE_BLKNO);
-            (*meta_page.data().as_ptr().cast::<MetaPageData>()).field_norms_blkno
-        };
-
+    pub fn new(
+        index: pgrx::pg_sys::Relation,
+        total_doc_cnt: u32,
+        avg_dl: f32,
+        fieldnorm_reader: FieldNormReader,
+    ) -> Self {
         Self {
             index,
             encoder: BlockEncoder::new(),
@@ -115,7 +118,7 @@ impl PostingSerializer {
             avg_dl,
             total_doc_cnt,
             bm25_weight: None,
-            filednorm_reader: FieldNormReader::new(index, filednorm_blkno),
+            fieldnorm_reader,
         }
     }
 
@@ -141,21 +144,15 @@ impl PostingSerializer {
                 self.flush_block_unfull();
             }
         }
-        let mut pager = PageBuilder::new(self.index, PageFlags::POSTINGS, true);
-        pager
-            .write_all(bytemuck::cast_slice(self.skip_write.as_slice()))
-            .unwrap();
+        let mut pager = PageWriter::new(self.index, PageFlags::POSTINGS, true);
+        pager.write(bytemuck::cast_slice(self.skip_write.as_slice()));
         let mut offset = 0;
         for skip in self.skip_write.iter().take(self.skip_write.len() - 1) {
             let len = skip.block_size();
-            pager
-                .write_all_no_cross(&self.posting_write[offset..][..len])
-                .unwrap();
+            pager.write_no_cross(&self.posting_write[offset..][..len]);
             offset += len;
         }
-        pager
-            .write_all_no_cross(&self.posting_write[offset..])
-            .unwrap();
+        pager.write_no_cross(&self.posting_write[offset..]);
         let blkno = pager.finalize();
         self.last_doc_id = 0;
         self.bm25_weight = None;
@@ -238,7 +235,7 @@ impl PostingSerializer {
         for i in 0..self.block_size {
             let doc_id = self.doc_ids[i];
             let tf = self.term_freqs[i];
-            let fieldnorm_id = self.filednorm_reader.read(doc_id);
+            let fieldnorm_id = self.fieldnorm_reader.read(doc_id);
             let len = id_to_fieldnorm(fieldnorm_id);
             let bm25_score = bm25_weight.score(len, tf);
             if bm25_score > blockwand_max {

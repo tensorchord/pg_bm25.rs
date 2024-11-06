@@ -1,4 +1,8 @@
-use crate::{datatype::Bm25VectorBorrowed, postings::TermInfoReader};
+use crate::{
+    datatype::Bm25VectorBorrowed,
+    field_norm::{fieldnorm_to_id, id_to_fieldnorm},
+    term_info::TermInfoReader,
+};
 
 const K1: f32 = 1.2;
 const B: f32 = 0.75;
@@ -41,7 +45,8 @@ pub fn bm25_score_batch(
     query_vector: Bm25VectorBorrowed,
 ) -> f32 {
     use std::cmp::Ordering;
-    let precompute = K1 * (1.0 - B + B * target_vector.doc_len() as f32 / avgdl);
+    let doc_len = id_to_fieldnorm(fieldnorm_to_id(target_vector.doc_len()));
+    let precompute = K1 * (1.0 - B + B * doc_len as f32 / avgdl);
     let (li, lv) = (target_vector.indexes(), target_vector.values());
     let (mut lp, ln) = (0, target_vector.len() as usize);
     let (ri, rv) = (query_vector.indexes(), query_vector.values());
@@ -50,7 +55,7 @@ pub fn bm25_score_batch(
     while lp < ln && rp < rn {
         match Ord::cmp(&li[lp], &ri[rp]) {
             Ordering::Equal => {
-                let idf = idf(doc_cnt, term_info_reader.read(li[lp]).doc_count);
+                let idf = idf(doc_cnt, term_info_reader.read(li[lp]));
                 let tf = lv[lp] as f32;
                 let res = rv[rp] as f32 * idf * (K1 + 1.0) * tf / (tf + precompute);
                 scores += res;

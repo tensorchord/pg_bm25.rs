@@ -19,28 +19,36 @@ bitflags::bitflags! {
     pub struct PageFlags: u16 {
         const META = 1 << 0;
         const PAYLOAD = 1 << 1;
-        const FIELD_NORMS = 1 << 2;
+        const FIELD_NORM = 1 << 2;
         const POSTINGS = 1 << 3;
         const TERM_INFO = 1 << 4;
+        const GROWING = 1 << 5;
+        const DELETED = 1 << 15;
     }
+}
+
+pub const fn bm25_page_size() -> usize {
+    pgrx::pg_sys::BLCKSZ as usize
+        - std::mem::size_of::<pgrx::pg_sys::PageHeaderData>()
+        - std::mem::size_of::<Bm25PageOpaqueData>()
 }
 
 #[repr(C, align(8))]
 pub struct Bm25PageOpaqueData {
     pub next_blkno: pgrx::pg_sys::BlockNumber,
-    page_flag: PageFlags,
+    pub page_flag: PageFlags,
     bm25_page_id: u16, // for identification of bm25 index
 }
 
 #[repr(C, align(8))]
 pub struct PageData {
     pub header: pgrx::pg_sys::PageHeaderData,
-    content: [u8; bm25_page_size()],
+    pub content: [u8; bm25_page_size()],
     pub opaque: Bm25PageOpaqueData,
 }
 
 impl PageData {
-    pub fn init_mut(this: &mut MaybeUninit<Self>, flag: PageFlags) -> &mut Self {
+    pub fn init_mut(this: &mut MaybeUninit<Self>, flag: PageFlags) {
         unsafe {
             pgrx::pg_sys::PageInit(
                 this.as_mut_ptr() as _,
@@ -53,7 +61,7 @@ impl PageData {
                 bm25_page_id: BM25_PAGE_ID,
             });
             MaybeUninit::assume_init_mut(this)
-        }
+        };
     }
 
     pub fn data(&self) -> &[u8] {
@@ -75,6 +83,24 @@ impl PageData {
     }
 }
 
+impl<T> AsRef<T> for PageData {
+    fn as_ref(&self) -> &T {
+        const {
+            assert!(std::mem::size_of::<T>() <= bm25_page_size());
+        }
+        unsafe { &*(self.content.as_ptr() as *const T) }
+    }
+}
+
+impl<T> AsMut<T> for PageData {
+    fn as_mut(&mut self) -> &mut T {
+        const {
+            assert!(std::mem::size_of::<T>() <= bm25_page_size());
+        }
+        unsafe { &mut *(self.content.as_mut_ptr() as *mut T) }
+    }
+}
+
 pub struct PageReadGuard {
     buf: i32,
     page: NonNull<PageData>,
@@ -83,6 +109,26 @@ pub struct PageReadGuard {
 impl PageReadGuard {
     pub fn blkno(&self) -> pgrx::pg_sys::BlockNumber {
         unsafe { pgrx::pg_sys::BufferGetBlockNumber(self.buf) }
+    }
+
+    // not garanteed to be atomic
+    pub fn upgrade(self, relation: pgrx::pg_sys::Relation) -> PageWriteGuard {
+        unsafe {
+            use pgrx::pg_sys::{
+                GenericXLogRegisterBuffer, GenericXLogStart, LockBuffer, BUFFER_LOCK_EXCLUSIVE,
+                BUFFER_LOCK_UNLOCK, GENERIC_XLOG_FULL_IMAGE,
+            };
+            LockBuffer(self.buf, BUFFER_LOCK_UNLOCK as _);
+            LockBuffer(self.buf, BUFFER_LOCK_EXCLUSIVE as _);
+            let state = GenericXLogStart(relation);
+            let page = GenericXLogRegisterBuffer(state, self.buf, GENERIC_XLOG_FULL_IMAGE as _);
+            let page = NonNull::new(page.cast()).expect("failed to get page");
+            PageWriteGuard {
+                buf: self.buf,
+                page,
+                state,
+            }
+        }
     }
 }
 
@@ -109,11 +155,12 @@ pub fn page_read(
     assert!(blkno != pgrx::pg_sys::InvalidBlockNumber);
     unsafe {
         use pgrx::pg_sys::{
-            BufferGetPage, LockBuffer, ReadBufferExtended, ReadBufferMode, BUFFER_LOCK_SHARE,
+            BufferGetPage, ForkNumber, LockBuffer, ReadBufferExtended, ReadBufferMode,
+            BUFFER_LOCK_SHARE,
         };
         let buf = ReadBufferExtended(
             relation,
-            0,
+            ForkNumber::MAIN_FORKNUM,
             blkno,
             ReadBufferMode::RBM_NORMAL,
             std::ptr::null_mut(),
@@ -260,8 +307,46 @@ pub fn page_alloc(
     }
 }
 
-pub const fn bm25_page_size() -> usize {
-    pgrx::pg_sys::BLCKSZ as usize
-        - std::mem::size_of::<pgrx::pg_sys::PageHeaderData>()
-        - std::mem::size_of::<Bm25PageOpaqueData>()
+pub fn page_get_max_offset_number(page: &PageData) -> u16 {
+    assert!(page.header.pd_lower >= std::mem::size_of::<pgrx::pg_sys::PageHeaderData>() as u16);
+    (page.header.pd_lower - std::mem::size_of::<pgrx::pg_sys::PageHeaderData>() as u16)
+        / std::mem::size_of::<pgrx::pg_sys::ItemIdData>() as u16
+}
+
+pub fn page_get_item_id(
+    page: &PageData,
+    offset_number: pgrx::pg_sys::OffsetNumber,
+) -> pgrx::pg_sys::ItemIdData {
+    unsafe {
+        page.header
+            .pd_linp
+            .as_ptr()
+            .add(offset_number as usize - 1)
+            .read()
+    }
+}
+
+pub fn page_get_item<T>(page: &PageData, item_id: pgrx::pg_sys::ItemIdData) -> &T {
+    unsafe {
+        let offset = item_id.lp_off();
+        let ptr = (page as *const PageData)
+            .cast::<u8>()
+            .add(offset as usize)
+            .cast::<T>();
+        assert!(ptr.is_aligned());
+        &*ptr
+    }
+}
+
+pub fn page_append_item(page: &mut PageData, item: &[u8]) -> bool {
+    let offset_number = unsafe {
+        pgrx::pg_sys::PageAddItemExtended(
+            page as *mut _ as *mut i8,
+            item.as_ptr() as *const i8 as *mut i8,
+            item.len(),
+            pgrx::pg_sys::InvalidOffsetNumber,
+            0,
+        )
+    };
+    offset_number != pgrx::pg_sys::InvalidOffsetNumber
 }

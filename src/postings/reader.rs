@@ -2,46 +2,23 @@ use std::{fmt::Debug, io::Read, mem::MaybeUninit};
 
 use crate::{
     field_norm::id_to_fieldnorm,
-    page::{
-        bm25_page_size, page_read, ContinuousPageReader, MetaPageData, PageReadGuard, PageReader,
-    },
+    page::{bm25_page_size, page_read, ContinuousPageReader, PageReadGuard, PageReader},
     postings::TERMINATED_DOC,
     utils::compress_block::BlockDecoder,
     weight::Bm25Weight,
 };
 
-use super::{SkipBlock, TermInfo, COMPRESSION_BLOCK_SIZE};
+use super::{PostingTermInfo, SkipBlock, COMPRESSION_BLOCK_SIZE};
 
-pub struct InvertedReader {
-    index: pgrx::pg_sys::Relation,
-    term_info_reader: TermInfoReader,
-}
+pub struct PostingTermInfoReader(ContinuousPageReader<PostingTermInfo>);
 
-impl InvertedReader {
-    pub fn new(index: pgrx::pg_sys::Relation, meta: &MetaPageData) -> Self {
-        let term_info_reader = TermInfoReader::new(index, meta.term_info_blkno);
-        Self {
-            index,
-            term_info_reader,
-        }
-    }
-
-    pub fn get_posting_reader(&self, term_id: u32) -> Option<PostingReader> {
-        let term_info = self.term_info_reader.read(term_id);
-        if term_info.doc_count == 0 {
-            return None;
-        }
-        Some(PostingReader::new(self.index, term_info))
-    }
-}
-pub struct TermInfoReader(ContinuousPageReader<TermInfo>);
-
-impl TermInfoReader {
+impl PostingTermInfoReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
         Self(ContinuousPageReader::new(index, blkno))
     }
 
-    pub fn read(&self, term_id: u32) -> TermInfo {
+    // TODO: return optional to check max term id
+    pub fn read(&self, term_id: u32) -> PostingTermInfo {
         self.0.read(term_id)
     }
 }
@@ -81,7 +58,7 @@ impl Debug for PostingReader {
 // - advance_block + advance_cur to move forward, manually call decode_block
 // - shallow_seek + seek to move to a specific doc_id, advance to move forward. it will decode_block automatically
 impl PostingReader {
-    pub fn new(index: pgrx::pg_sys::Relation, term_info: TermInfo) -> Self {
+    pub fn new(index: pgrx::pg_sys::Relation, term_info: PostingTermInfo) -> Self {
         assert!(term_info.postings_blkno != pgrx::pg_sys::InvalidBlockNumber);
         let mut reader = PageReader::new(index, term_info.postings_blkno);
         let block_cnt = (term_info.doc_count).div_ceil(COMPRESSION_BLOCK_SIZE as u32);

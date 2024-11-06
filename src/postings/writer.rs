@@ -39,6 +39,10 @@ impl PostingsWriter {
             s.close_term();
         }
     }
+
+    pub fn term_info(&self) -> impl Iterator<Item = u32> + '_ {
+        self.term_index.iter().map(|recorder| recorder.total_docs)
+    }
 }
 
 // Store (doc_id, tf) tuples, doc_id is delta encoded
