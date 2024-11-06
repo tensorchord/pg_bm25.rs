@@ -12,7 +12,7 @@ use super::memory_bm25vector::Bm25VectorOutput;
 #[pgrx::pg_extern(immutable, strict, parallel_safe)]
 fn _bm25catalog_bm25vector_send(vector: Bm25VectorInput<'_>) -> Bytea {
     use pgrx::pg_sys::StringInfoData;
-    let vector = vector.as_ref();
+    let vector = vector.borrow();
     unsafe {
         let mut buf = StringInfoData::default();
         let len = vector.len();

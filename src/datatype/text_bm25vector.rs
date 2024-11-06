@@ -144,7 +144,7 @@ fn _bm25catalog_bm25vector_in(input: &CStr, _oid: Oid, _typmod: i32) -> Bm25Vect
 
 #[pgrx::pg_extern(immutable, strict, parallel_safe)]
 fn _bm25catalog_bm25vector_out(vector: Bm25VectorInput<'_>) -> CString {
-    let vector = vector.as_ref();
+    let vector = vector.borrow();
     let mut buffer = String::new();
     buffer.push('{');
     let mut need_splitter = false;

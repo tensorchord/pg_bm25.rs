@@ -1,4 +1,4 @@
-use crate::page::ContinuousPageReader;
+use crate::page::VirtualPageReader;
 
 pub struct PayloadWriter {
     pub buffer: Vec<u64>,
@@ -18,14 +18,16 @@ impl PayloadWriter {
     }
 }
 
-pub struct PayloadReader(ContinuousPageReader<u64>);
+pub struct PayloadReader(VirtualPageReader);
 
 impl PayloadReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
-        Self(ContinuousPageReader::new(index, blkno))
+        Self(VirtualPageReader::new(index, blkno))
     }
 
     pub fn read(&self, doc_id: u32) -> u64 {
-        self.0.read(doc_id)
+        let mut buf = [0u8; 8];
+        self.0.read_at(doc_id * 8, &mut buf);
+        u64::from_le_bytes(buf)
     }
 }

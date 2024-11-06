@@ -4,8 +4,7 @@ use crate::page::bm25_page_size;
 
 use super::{page_alloc, PageFlags, PageWriteGuard};
 
-/// Utility to build pages like a file
-pub struct PageBuilder {
+pub struct PageWriter {
     relation: pgrx::pg_sys::Relation,
     flag: PageFlags,
     skip_lock_rel: bool,
@@ -13,7 +12,7 @@ pub struct PageBuilder {
     page: Option<PageWriteGuard>,
 }
 
-impl PageBuilder {
+impl PageWriter {
     pub fn new(relation: pgrx::pg_sys::Relation, flag: PageFlags, skip_lock_rel: bool) -> Self {
         Self {
             relation,
@@ -24,10 +23,7 @@ impl PageBuilder {
         }
     }
 
-    /// finalize the page and return the first block number
-    /// if it hasn't been written yet, it will return InvalidBlockNumber
-    pub fn finalize(mut self) -> pgrx::pg_sys::BlockNumber {
-        self.page.take();
+    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
         self.first_blkno
     }
 
@@ -53,8 +49,22 @@ impl PageBuilder {
         self.page.as_mut().unwrap().deref_mut().freespace_mut()
     }
 
+    pub fn write(&mut self, mut data: &[u8]) {
+        while !data.is_empty() {
+            let space = self.freespace_mut();
+            let space_len = space.len();
+            let len = space_len.min(data.len());
+            space[..len].copy_from_slice(&data[..len]);
+            *self.offset() += len as u16;
+            if len == space_len {
+                self.change_page();
+            }
+            data = &data[len..];
+        }
+    }
+
     // it will make sure the data is on the same page
-    pub fn write_all_no_cross(&mut self, data: &[u8]) -> std::io::Result<()> {
+    pub fn write_no_cross(&mut self, data: &[u8]) {
         assert!(data.len() <= bm25_page_size());
         let mut space = self.freespace_mut();
         if space.len() < data.len() {
@@ -67,39 +77,5 @@ impl PageBuilder {
         if data.len() == space_len {
             self.change_page();
         }
-        Ok(())
-    }
-}
-
-impl Drop for PageBuilder {
-    fn drop(&mut self) {
-        if self.page.is_some() {
-            pgrx::warning!("PageBuilder dropped without finalizing");
-        }
-    }
-}
-
-impl std::io::Write for PageBuilder {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.write_all(buf).map(|_| buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    fn write_all(&mut self, mut data: &[u8]) -> std::io::Result<()> {
-        while !data.is_empty() {
-            let space = self.freespace_mut();
-            let space_len = space.len();
-            let len = space_len.min(data.len());
-            space[..len].copy_from_slice(&data[..len]);
-            *self.offset() += len as u16;
-            if len == space_len {
-                self.change_page();
-            }
-            data = &data[len..];
-        }
-        Ok(())
     }
 }

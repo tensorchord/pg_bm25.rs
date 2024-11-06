@@ -1,10 +1,7 @@
-#![allow(non_snake_case)]
-
 use crate::guc::ENABLE_INDEX;
 
 use super::{
     build::{ambuild, ambuildempty},
-    delete::ambulkdelete,
     insert::aminsert,
     options::amoptions,
     scan::{ambeginscan, amendscan, amgettuple, amrescan},
@@ -78,14 +75,6 @@ pub unsafe extern "C" fn amcostestimate(
 }
 
 #[pgrx::pg_guard]
-pub unsafe extern "C" fn amvacuumcleanup(
-    _info: *mut pgrx::pg_sys::IndexVacuumInfo,
-    _stats: *mut pgrx::pg_sys::IndexBulkDeleteResult,
-) -> *mut pgrx::pg_sys::IndexBulkDeleteResult {
-    std::ptr::null_mut()
-}
-
-#[pgrx::pg_guard]
 pub unsafe extern "C" fn ampropety(
     _index_oid: pgrx::pg_sys::Oid,
     attno: i32,
@@ -100,4 +89,23 @@ pub unsafe extern "C" fn ampropety(
         return true;
     }
     false
+}
+
+#[allow(unused_variables)]
+#[pgrx::pg_guard]
+pub unsafe extern "C" fn ambulkdelete(
+    info: *mut pgrx::pg_sys::IndexVacuumInfo,
+    stats: *mut pgrx::pg_sys::IndexBulkDeleteResult,
+    callback: pgrx::pg_sys::IndexBulkDeleteCallback,
+    callback_state: *mut std::os::raw::c_void,
+) -> *mut pgrx::pg_sys::IndexBulkDeleteResult {
+    std::ptr::null_mut()
+}
+
+#[pgrx::pg_guard]
+pub unsafe extern "C" fn amvacuumcleanup(
+    _info: *mut pgrx::pg_sys::IndexVacuumInfo,
+    _stats: *mut pgrx::pg_sys::IndexBulkDeleteResult,
+) -> *mut pgrx::pg_sys::IndexBulkDeleteResult {
+    std::ptr::null_mut()
 }

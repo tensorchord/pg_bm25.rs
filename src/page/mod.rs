@@ -1,9 +1,9 @@
-mod builder;
-mod meta;
 mod postgres;
 mod reader;
+mod r#virtual;
+mod writer;
 
-pub use builder::PageBuilder;
-pub use meta::{MetaPageData, META_VERSION};
 pub use postgres::*;
+pub use r#virtual::{VirtualPageReader, VirtualPageWriter};
 pub use reader::{ContinuousPageReader, PageReader};
+pub use writer::PageWriter;

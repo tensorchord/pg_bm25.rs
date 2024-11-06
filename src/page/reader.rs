@@ -1,6 +1,6 @@
 use crate::page::bm25_page_size;
 
-use super::{page_read, PageReadGuard};
+use super::{page_read, page_write, PageReadGuard};
 
 pub struct ContinuousPageReader<T> {
     index: pgrx::pg_sys::Relation,
@@ -23,6 +23,16 @@ impl<T: Copy> ContinuousPageReader<T> {
         let offset = (idx % Self::page_count() as u32) as usize;
         let page = page_read(self.index, blkno);
         unsafe { page.data().as_ptr().cast::<T>().add(offset).read() }
+    }
+
+    pub fn update(&self, idx: u32, f: impl FnOnce(&mut T)) {
+        let blkno_offset = idx / Self::page_count() as u32;
+        let blkno = self.start_blkno + blkno_offset as pgrx::pg_sys::BlockNumber;
+        let offset = (idx % Self::page_count() as u32) as usize;
+        let mut page = page_write(self.index, blkno);
+        let data = page.data_mut();
+        let ptr = unsafe { data.as_mut_ptr().cast::<T>().add(offset) };
+        f(unsafe { &mut *ptr });
     }
 
     const fn page_count() -> usize {

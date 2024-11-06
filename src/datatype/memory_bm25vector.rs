@@ -43,8 +43,13 @@ impl Bm25VectorHeader {
             std::slice::from_raw_parts(ptr, len)
         }
     }
-    pub fn as_ref(&self) -> Bm25VectorBorrowed {
+    pub fn borrow(&self) -> Bm25VectorBorrowed {
         unsafe { Bm25VectorBorrowed::new_unchecked(self.doc_len, self.indexes(), self.values()) }
+    }
+    pub fn to_bytes(&self) -> &[u8] {
+        let len = self.varlena as usize >> 2;
+        let ptr = self as *const Bm25VectorHeader as *const u8;
+        unsafe { std::slice::from_raw_parts(ptr, len) }
     }
 }
 
@@ -162,7 +167,7 @@ impl FromDatum for Bm25VectorOutput {
             if p != q {
                 Some(Bm25VectorOutput(q))
             } else {
-                let vector = p.as_ref().as_ref();
+                let vector = p.as_ref().borrow();
                 Some(Bm25VectorOutput::new(vector))
             }
         }
@@ -183,7 +188,7 @@ unsafe impl pgrx::datum::UnboxDatum for Bm25VectorOutput {
         if p != q {
             Bm25VectorOutput(q)
         } else {
-            let vector = p.as_ref().as_ref();
+            let vector = p.as_ref().borrow();
             Bm25VectorOutput::new(vector)
         }
     }
