@@ -1,4 +1,8 @@
-use crate::page::VirtualPageReader;
+/// Payload segment is a global segment that stores the ctid of the documents.
+/// doc_id -> ctid mapping
+use crate::page::{PageFlags, VirtualPageReader, VirtualPageWriter};
+
+use super::meta::MetaPageData;
 
 pub struct PayloadWriter {
     pub buffer: Vec<u64>,
@@ -13,8 +17,15 @@ impl PayloadWriter {
         self.buffer.push(id);
     }
 
-    pub fn data(&self) -> &[u8] {
-        bytemuck::cast_slice(&self.buffer)
+    pub fn serialize(
+        &self,
+        index: pgrx::pg_sys::Relation,
+        meta: &mut MetaPageData,
+    ) -> pgrx::pg_sys::BlockNumber {
+        let data = bytemuck::cast_slice(&self.buffer);
+        let mut pager = VirtualPageWriter::new(index, meta, PageFlags::PAYLOAD, true);
+        pager.write(data);
+        pager.finalize()
     }
 }
 

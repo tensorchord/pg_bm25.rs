@@ -1,6 +1,6 @@
 use bitpacking::{BitPacker, BitPacker4x};
 
-use crate::postings::COMPRESSION_BLOCK_SIZE;
+use crate::segment::posting::COMPRESSION_BLOCK_SIZE;
 
 use super::vint;
 

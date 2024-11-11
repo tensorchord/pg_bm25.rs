@@ -1,8 +1,11 @@
+/// Term statistic segment is a **global** segment that stores the statistic for each terms.
+/// Currently, it stores total count of documents which contains the term.
+/// Used to calculate the inverse document frequency.
 use crate::page::ContinuousPageReader;
 
-pub struct TermInfoReader(ContinuousPageReader<u32>);
+pub struct TermStatReader(ContinuousPageReader<u32>);
 
-impl TermInfoReader {
+impl TermStatReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
         Self(ContinuousPageReader::new(index, blkno))
     }

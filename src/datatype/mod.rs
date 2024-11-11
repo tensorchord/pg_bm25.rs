@@ -1,6 +1,6 @@
-mod binary;
 mod binary_bm25vector;
 mod bm25vector;
+mod bytea;
 mod functions;
 mod memory_bm25vector;
 mod text_bm25vector;

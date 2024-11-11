@@ -1,6 +1,9 @@
 use crate::{
-    field_norm::{id_to_fieldnorm, FieldNormReader, MAX_FIELD_NORM},
-    page::{PageFlags, PageWriter},
+    page::{PageFlags, VirtualPageWriter},
+    segment::{
+        field_norm::{id_to_fieldnorm, FieldNormRead, MAX_FIELD_NORM},
+        meta::MetaPageData,
+    },
     token::vocab_len,
     utils::compress_block::BlockEncoder,
     weight::{idf, Bm25Weight},
@@ -8,21 +11,20 @@ use crate::{
 
 use super::{PostingTermInfo, SkipBlock, COMPRESSION_BLOCK_SIZE};
 
-pub struct InvertedSerializer {
-    postings_serializer: PostingSerializer,
+pub struct InvertedSerializer<R: FieldNormRead> {
+    postings_serializer: PostingSerializer<R>,
     term_info_serializer: PostingTermInfoSerializer,
     current_term_info: PostingTermInfo,
 }
 
-impl InvertedSerializer {
+impl<R: FieldNormRead> InvertedSerializer<R> {
     pub fn new(
         index: pgrx::pg_sys::Relation,
-        total_doc_cnt: u32,
+        doc_cnt: u32,
         avgdl: f32,
-        fieldnorm_reader: FieldNormReader,
+        fieldnorm_reader: R,
     ) -> Self {
-        let postings_serializer =
-            PostingSerializer::new(index, total_doc_cnt, avgdl, fieldnorm_reader);
+        let postings_serializer = PostingSerializer::new(index, doc_cnt, avgdl, fieldnorm_reader);
         let term_info_serializer = PostingTermInfoSerializer::new(index);
         Self {
             postings_serializer,
@@ -45,16 +47,16 @@ impl InvertedSerializer {
         self.postings_serializer.write_doc(doc_id, freq);
     }
 
-    pub fn close_term(&mut self) {
+    pub fn close_term(&mut self, meta: &mut MetaPageData) {
         if self.current_term_info.doc_count != 0 {
-            self.current_term_info.postings_blkno = self.postings_serializer.close_term();
+            self.current_term_info.postings_blkno = self.postings_serializer.close_term(meta);
         }
         self.term_info_serializer.push(self.current_term_info);
     }
 
     /// return term_info_blkno
-    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
-        self.term_info_serializer.finalize()
+    pub fn finalize(self, meta: &mut MetaPageData) -> pgrx::pg_sys::BlockNumber {
+        self.term_info_serializer.finalize(meta)
     }
 }
 
@@ -75,14 +77,14 @@ impl PostingTermInfoSerializer {
         self.term_infos.push(term_info);
     }
 
-    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
-        let mut pager = PageWriter::new(self.index, PageFlags::POSTINGS, true);
+    pub fn finalize(self, meta: &mut MetaPageData) -> pgrx::pg_sys::BlockNumber {
+        let mut pager = VirtualPageWriter::new(self.index, meta, PageFlags::POSTINGS, true);
         pager.write(bytemuck::cast_slice(&self.term_infos));
         pager.finalize()
     }
 }
 
-struct PostingSerializer {
+struct PostingSerializer<R: FieldNormRead> {
     index: pgrx::pg_sys::Relation,
     encoder: BlockEncoder,
     posting_write: Vec<u8>,
@@ -94,17 +96,17 @@ struct PostingSerializer {
     // block wand helper
     skip_write: Vec<SkipBlock>,
     avg_dl: f32,
-    total_doc_cnt: u32,
+    doc_cnt: u32,
     bm25_weight: Option<Bm25Weight>,
-    fieldnorm_reader: FieldNormReader,
+    fieldnorm_reader: R,
 }
 
-impl PostingSerializer {
+impl<R: FieldNormRead> PostingSerializer<R> {
     pub fn new(
         index: pgrx::pg_sys::Relation,
-        total_doc_cnt: u32,
+        doc_cnt: u32,
         avg_dl: f32,
-        fieldnorm_reader: FieldNormReader,
+        fieldnorm_reader: R,
     ) -> Self {
         Self {
             index,
@@ -116,14 +118,14 @@ impl PostingSerializer {
             block_size: 0,
             skip_write: Vec::new(),
             avg_dl,
-            total_doc_cnt,
+            doc_cnt,
             bm25_weight: None,
             fieldnorm_reader,
         }
     }
 
     pub fn new_term(&mut self, doc_count: u32) {
-        let idf = idf(self.total_doc_cnt, doc_count);
+        let idf = idf(self.doc_cnt, doc_count);
         self.bm25_weight = Some(Bm25Weight::new(1, idf, self.avg_dl));
     }
 
@@ -136,7 +138,7 @@ impl PostingSerializer {
         }
     }
 
-    pub fn close_term(&mut self) -> pgrx::pg_sys::BlockNumber {
+    pub fn close_term(&mut self, meta: &mut MetaPageData) -> pgrx::pg_sys::BlockNumber {
         if self.block_size > 0 {
             if self.block_size == COMPRESSION_BLOCK_SIZE {
                 self.flush_block();
@@ -144,7 +146,7 @@ impl PostingSerializer {
                 self.flush_block_unfull();
             }
         }
-        let mut pager = PageWriter::new(self.index, PageFlags::POSTINGS, true);
+        let mut pager = VirtualPageWriter::new(self.index, meta, PageFlags::POSTINGS, true);
         pager.write(bytemuck::cast_slice(self.skip_write.as_slice()));
         let mut offset = 0;
         for skip in self.skip_write.iter().take(self.skip_write.len() - 1) {

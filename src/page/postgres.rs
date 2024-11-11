@@ -1,5 +1,4 @@
 use std::{
-    mem::MaybeUninit,
     ops::{Deref, DerefMut},
     ptr::NonNull,
 };
@@ -21,9 +20,10 @@ bitflags::bitflags! {
         const PAYLOAD = 1 << 1;
         const FIELD_NORM = 1 << 2;
         const POSTINGS = 1 << 3;
-        const TERM_INFO = 1 << 4;
+        const TERM_STATISTIC = 1 << 4;
         const GROWING = 1 << 5;
-        const DELETED = 1 << 15;
+        const DELETE = 1 << 6;
+        const FREE = 1 << 15;
     }
 }
 
@@ -48,19 +48,18 @@ pub struct PageData {
 }
 
 impl PageData {
-    pub fn init_mut(this: &mut MaybeUninit<Self>, flag: PageFlags) {
+    pub fn init_mut(&mut self, flag: PageFlags) {
         unsafe {
             pgrx::pg_sys::PageInit(
-                this.as_mut_ptr() as _,
+                self as *mut _ as _,
                 pgrx::pg_sys::BLCKSZ as _,
                 std::mem::size_of::<Bm25PageOpaqueData>(),
             );
-            (&raw mut (*this.as_mut_ptr()).opaque).write(Bm25PageOpaqueData {
+            (&raw mut self.opaque).write(Bm25PageOpaqueData {
                 next_blkno: pgrx::pg_sys::InvalidBlockNumber,
                 page_flag: flag,
                 bm25_page_id: BM25_PAGE_ID,
             });
-            MaybeUninit::assume_init_mut(this)
         };
     }
 
@@ -111,7 +110,7 @@ impl PageReadGuard {
         unsafe { pgrx::pg_sys::BufferGetBlockNumber(self.buf) }
     }
 
-    // not garanteed to be atomic
+    // not guaranteed to be atomic
     pub fn upgrade(self, relation: pgrx::pg_sys::Relation) -> PageWriteGuard {
         unsafe {
             use pgrx::pg_sys::{
@@ -205,7 +204,6 @@ impl Drop for PageWriteGuard {
             } else {
                 pgrx::pg_sys::GenericXLogFinish(self.state);
             }
-            pgrx::pg_sys::MarkBufferDirty(self.buf);
             pgrx::pg_sys::UnlockReleaseBuffer(self.buf);
         }
     }
@@ -219,7 +217,7 @@ pub fn page_write(
     unsafe {
         use pgrx::pg_sys::{
             ForkNumber, GenericXLogRegisterBuffer, GenericXLogStart, LockBuffer,
-            ReadBufferExtended, ReadBufferMode, BUFFER_LOCK_EXCLUSIVE, GENERIC_XLOG_FULL_IMAGE,
+            ReadBufferExtended, ReadBufferMode, BUFFER_LOCK_EXCLUSIVE,
         };
         let buf = ReadBufferExtended(
             relation,
@@ -230,7 +228,7 @@ pub fn page_write(
         );
         LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE as _);
         let state = GenericXLogStart(relation);
-        let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);
+        let page = GenericXLogRegisterBuffer(state, buf, 0);
         let page = NonNull::new(page.cast()).expect("failed to get page");
         PageWriteGuard { buf, page, state }
     }
@@ -295,6 +293,72 @@ pub fn page_alloc(
         if !skip_lock_rel {
             UnlockRelationForExtension(relation, ExclusiveLock as _);
         }
+        let state = GenericXLogStart(relation);
+        let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);
+        let mut page = NonNull::new(page.cast()).expect("failed to get page");
+        PageData::init_mut(page.as_mut(), flag);
+        PageWriteGuard {
+            buf,
+            page: page.cast(),
+            state,
+        }
+    }
+}
+
+#[cfg(any(feature = "pg16", feature = "pg17"))]
+pub fn page_alloc_init_forknum(
+    relation: pgrx::pg_sys::Relation,
+    flag: PageFlags,
+) -> PageWriteGuard {
+    unsafe {
+        use pgrx::pg_sys::{
+            BufferManagerRelation,
+            ExtendBufferedFlags::{EB_LOCK_FIRST, EB_SKIP_EXTENSION_LOCK},
+            ExtendBufferedRel, ForkNumber, GenericXLogRegisterBuffer, GenericXLogStart,
+            GENERIC_XLOG_FULL_IMAGE,
+        };
+        let arg_flags = EB_LOCK_FIRST | EB_SKIP_EXTENSION_LOCK;
+        let buf = ExtendBufferedRel(
+            BufferManagerRelation {
+                rel: relation,
+                smgr: std::ptr::null_mut(),
+                relpersistence: 0,
+            },
+            ForkNumber::INIT_FORKNUM,
+            std::ptr::null_mut(),
+            arg_flags,
+        );
+        let state = GenericXLogStart(relation);
+        let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);
+        let mut page = NonNull::new(page.cast()).expect("failed to get page");
+        PageData::init_mut(page.as_mut(), flag);
+        PageWriteGuard {
+            buf,
+            page: page.cast(),
+            state,
+        }
+    }
+}
+
+#[cfg(any(feature = "pg14", feature = "pg15"))]
+pub fn page_alloc_init_forknum(
+    relation: pgrx::pg_sys::Relation,
+    flag: PageFlags,
+) -> PageWriteGuard {
+    unsafe {
+        use pgrx::pg_sys::{
+            ExclusiveLock, ForkNumber, GenericXLogRegisterBuffer, GenericXLogStart, LockBuffer,
+            LockRelationForExtension, ReadBuffer, ReadBufferMode, UnlockRelationForExtension,
+            BUFFER_LOCK_EXCLUSIVE, GENERIC_XLOG_FULL_IMAGE,
+        };
+        let buf = ReadBufferExtended(
+            index,
+            ForkNumber::INIT_FORKNUM,
+            P_NEW,
+            ReadBufferMode::RBM_NORMAL,
+            std::ptr::null_mut(),
+        );
+        LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE as _);
         let state = GenericXLogStart(relation);
         let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);
         let mut page = NonNull::new(page.cast()).expect("failed to get page");

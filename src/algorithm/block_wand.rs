@@ -1,6 +1,9 @@
 use crate::{
-    field_norm::{id_to_fieldnorm, FieldNormReader},
-    postings::{PostingReader, TERMINATED_DOC},
+    segment::{
+        delete::DeleteBitmapReader,
+        field_norm::{id_to_fieldnorm, FieldNormRead, FieldNormReader},
+        posting::{PostingReader, TERMINATED_DOC},
+    },
     utils::topk_computer::TopKComputer,
     weight::Bm25Weight,
 };
@@ -14,6 +17,7 @@ pub struct SealedScorer {
 pub fn block_wand_single(
     mut scorer: SealedScorer,
     fieldnorm_reader: &FieldNormReader,
+    delete_bitmap_reader: &DeleteBitmapReader,
     computer: &mut TopKComputer,
 ) {
     'outer: loop {
@@ -25,11 +29,13 @@ pub fn block_wand_single(
         scorer.posting.decode_block();
         loop {
             let doc_id = scorer.posting.doc_id();
-            let tf = scorer.posting.term_freq();
-            let fieldnorm_id = fieldnorm_reader.read(doc_id);
-            let fieldnorm = id_to_fieldnorm(fieldnorm_id);
-            let score = scorer.weight.score(fieldnorm, tf);
-            computer.push(score, scorer.posting.doc_id());
+            if !delete_bitmap_reader.is_delete(doc_id) {
+                let tf = scorer.posting.term_freq();
+                let fieldnorm_id = fieldnorm_reader.read(doc_id);
+                let fieldnorm = id_to_fieldnorm(fieldnorm_id);
+                let score = scorer.weight.score(fieldnorm, tf);
+                computer.push(score, scorer.posting.doc_id());
+            }
             if !scorer.posting.advance_cur() {
                 break;
             }
@@ -43,6 +49,7 @@ pub fn block_wand_single(
 pub fn block_wand(
     mut scorers: Vec<SealedScorer>,
     fieldnorm_reader: &FieldNormReader,
+    delete_bitmap_reader: &DeleteBitmapReader,
     computer: &mut TopKComputer,
 ) {
     for s in &mut scorers {
@@ -70,13 +77,14 @@ pub fn block_wand(
             continue;
         }
 
-        let len = id_to_fieldnorm(fieldnorm_reader.read(pivot_doc));
-        let score = scorers[..pivot_len]
-            .iter()
-            .map(|scorer| scorer.weight.score(len, scorer.posting.term_freq()))
-            .sum();
-
-        computer.push(score, pivot_doc);
+        if !delete_bitmap_reader.is_delete(pivot_doc) {
+            let len = id_to_fieldnorm(fieldnorm_reader.read(pivot_doc));
+            let score = scorers[..pivot_len]
+                .iter()
+                .map(|scorer| scorer.weight.score(len, scorer.posting.term_freq()))
+                .sum();
+            computer.push(score, pivot_doc);
+        }
 
         advance_all_scorers_on_pivot(&mut scorers, pivot_len);
     }
