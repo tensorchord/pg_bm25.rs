@@ -1,25 +1,33 @@
-use std::{fmt::Debug, io::Read, mem::MaybeUninit};
+use std::{fmt::Debug, mem::MaybeUninit};
 
 use crate::{
-    field_norm::id_to_fieldnorm,
-    page::{bm25_page_size, page_read, ContinuousPageReader, PageReadGuard, PageReader},
-    postings::TERMINATED_DOC,
+    page::{bm25_page_size, page_read, PageReadGuard, VirtualPageReader},
+    segment::field_norm::id_to_fieldnorm,
     utils::compress_block::BlockDecoder,
     weight::Bm25Weight,
 };
 
-use super::{PostingTermInfo, SkipBlock, COMPRESSION_BLOCK_SIZE};
+use super::{PostingTermInfo, SkipBlock, COMPRESSION_BLOCK_SIZE, TERMINATED_DOC};
 
-pub struct PostingTermInfoReader(ContinuousPageReader<PostingTermInfo>);
+pub struct PostingTermInfoReader(VirtualPageReader);
 
 impl PostingTermInfoReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
-        Self(ContinuousPageReader::new(index, blkno))
+        Self(VirtualPageReader::new(index, blkno))
     }
 
-    // TODO: return optional to check max term id
     pub fn read(&self, term_id: u32) -> PostingTermInfo {
-        self.0.read(term_id)
+        let mut buf = MaybeUninit::uninit();
+        self.0.read_at(
+            term_id * std::mem::size_of::<PostingTermInfo>() as u32,
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    buf.as_mut_ptr() as *mut u8,
+                    std::mem::size_of::<PostingTermInfo>(),
+                )
+            },
+        );
+        unsafe { buf.assume_init() }
     }
 }
 
@@ -31,6 +39,7 @@ pub struct PostingReader {
     doc_decoder: BlockDecoder,
     freq_decoder: BlockDecoder,
     // skip cursor
+    virtual_reader: VirtualPageReader,
     cur_page: pgrx::pg_sys::BlockNumber,
     page_offset: usize,
     page_inner: Option<PageReadGuard>,
@@ -60,20 +69,25 @@ impl Debug for PostingReader {
 impl PostingReader {
     pub fn new(index: pgrx::pg_sys::Relation, term_info: PostingTermInfo) -> Self {
         assert!(term_info.postings_blkno != pgrx::pg_sys::InvalidBlockNumber);
-        let mut reader = PageReader::new(index, term_info.postings_blkno);
+        let reader = VirtualPageReader::new(index, term_info.postings_blkno);
         let block_cnt = (term_info.doc_count).div_ceil(COMPRESSION_BLOCK_SIZE as u32);
-        let skip_blocks = unsafe {
-            let mut buf: Box<[MaybeUninit<SkipBlock>]> = Box::new_uninit_slice(block_cnt as usize);
-            let slice_mut = std::slice::from_raw_parts_mut(
+        let mut buf: Box<[MaybeUninit<SkipBlock>]> = Box::new_uninit_slice(block_cnt as usize);
+        let slice_mut = unsafe {
+            std::slice::from_raw_parts_mut(
                 buf.as_mut_ptr() as *mut u8,
                 block_cnt as usize * std::mem::size_of::<SkipBlock>(),
-            );
-            reader.read_exact(slice_mut).unwrap();
-            buf.assume_init()
+            )
         };
+        let mut offset = 0;
+        while offset < slice_mut.len() {
+            let len = bm25_page_size().min(slice_mut.len() - offset);
+            reader.read_at(offset as u32, &mut slice_mut[offset..][..len]);
+            offset += bm25_page_size();
+        }
+        let skip_blocks = unsafe { buf.assume_init() };
 
-        let mut cur_page = reader.blkno();
-        let mut page_offset = reader.offset();
+        let mut cur_page = (slice_mut.len() / bm25_page_size()) as u32;
+        let mut page_offset = slice_mut.len() % bm25_page_size();
 
         if term_info.doc_count >= COMPRESSION_BLOCK_SIZE as u32 {
             let first_block_size = skip_blocks[0].block_size();
@@ -89,6 +103,7 @@ impl PostingReader {
             skip_blocks,
             doc_decoder: BlockDecoder::new(),
             freq_decoder: BlockDecoder::new(),
+            virtual_reader: reader,
             cur_page,
             page_offset,
             page_inner: None,
@@ -214,9 +229,9 @@ impl PostingReader {
             self.skip_blocks[self.cur_block - 1].last_doc
         };
 
-        let page = self
-            .page_inner
-            .get_or_insert_with(|| page_read(self.index, self.cur_page));
+        let page = self.page_inner.get_or_insert_with(|| {
+            page_read(self.index, self.virtual_reader.get_block_id(self.cur_page))
+        });
 
         if self.remain_doc_cnt < COMPRESSION_BLOCK_SIZE as u32 {
             let bytes = self.doc_decoder.decompress_vint_sorted(
@@ -262,7 +277,9 @@ impl PostingReader {
                 self.page_inner = None;
             }
         } else {
-            let page = page_read(self.index, self.cur_page);
+            let page = self.page_inner.get_or_insert_with(|| {
+                page_read(self.index, self.virtual_reader.get_block_id(self.cur_page))
+            });
             if page.data().len() == self.page_offset {
                 self.cur_page += 1;
                 self.page_offset = 0;

@@ -1,7 +1,7 @@
 use crate::{
     datatype::Bm25VectorBorrowed,
-    field_norm::{fieldnorm_to_id, id_to_fieldnorm},
-    term_info::TermInfoReader,
+    segment::field_norm::{fieldnorm_to_id, id_to_fieldnorm},
+    segment::term_stat::TermStatReader,
 };
 
 const K1: f32 = 1.2;
@@ -40,7 +40,7 @@ pub fn idf(doc_cnt: u32, doc_freq: u32) -> f32 {
 pub fn bm25_score_batch(
     doc_cnt: u32,
     avgdl: f32,
-    term_info_reader: &TermInfoReader,
+    term_stat_reader: &TermStatReader,
     target_vector: Bm25VectorBorrowed,
     query_vector: Bm25VectorBorrowed,
 ) -> f32 {
@@ -55,7 +55,7 @@ pub fn bm25_score_batch(
     while lp < ln && rp < rn {
         match Ord::cmp(&li[lp], &ri[rp]) {
             Ordering::Equal => {
-                let idf = idf(doc_cnt, term_info_reader.read(li[lp]));
+                let idf = idf(doc_cnt, term_stat_reader.read(li[lp]));
                 let tf = lv[lp] as f32;
                 let res = rv[rp] as f32 * idf * (K1 + 1.0) * tf / (tf + precompute);
                 scores += res;

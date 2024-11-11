@@ -1,10 +1,12 @@
-use crate::page::VirtualPageReader;
+use crate::page::{PageFlags, VirtualPageReader, VirtualPageWriter};
 
-pub struct FieldNormsWriter {
+use super::meta::MetaPageData;
+
+pub struct FieldNormWriter {
     buffer: Vec<u8>,
 }
 
-impl FieldNormsWriter {
+impl FieldNormWriter {
     pub fn new() -> Self {
         Self { buffer: Vec::new() }
     }
@@ -13,8 +15,30 @@ impl FieldNormsWriter {
         self.buffer.push(fieldnorm_to_id(fieldnorm));
     }
 
-    pub fn data(&self) -> &[u8] {
-        &self.buffer
+    pub fn serialize(
+        &self,
+        index: pgrx::pg_sys::Relation,
+        meta: &mut MetaPageData,
+    ) -> pgrx::pg_sys::BlockNumber {
+        let mut pager = VirtualPageWriter::new(index, meta, PageFlags::FIELD_NORM, true);
+        pager.write(&self.buffer);
+        pager.finalize()
+    }
+
+    pub fn to_memory_reader(&self) -> FieldNormMemoryReader {
+        FieldNormMemoryReader(&self.buffer)
+    }
+}
+
+pub trait FieldNormRead {
+    fn read(&self, doc_id: u32) -> u8;
+}
+
+pub struct FieldNormMemoryReader<'a>(&'a [u8]);
+
+impl<'a> FieldNormRead for FieldNormMemoryReader<'a> {
+    fn read(&self, doc_id: u32) -> u8 {
+        self.0[doc_id as usize]
     }
 }
 
@@ -24,8 +48,10 @@ impl FieldNormReader {
     pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
         Self(VirtualPageReader::new(index, blkno))
     }
+}
 
-    pub fn read(&self, doc_id: u32) -> u8 {
+impl FieldNormRead for FieldNormReader {
+    fn read(&self, doc_id: u32) -> u8 {
         let mut buf = [0u8; 1];
         self.0.read_at(doc_id, &mut buf);
         buf[0]

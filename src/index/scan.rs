@@ -5,12 +5,13 @@ use pgrx::{prelude::PgHeapTuple, FromDatum};
 use crate::{
     algorithm::block_wand::{block_wand, block_wand_single, SealedScorer},
     datatype::{Bm25VectorBorrowed, Bm25VectorOutput},
-    field_norm::FieldNormReader,
     guc::BM25_LIMIT,
     page::{page_read, METAPAGE_BLKNO},
-    payload::PayloadReader,
-    segments::{growing::GrowingSegmentReader, meta::MetaPageData, sealed::SealedSegmentReader},
-    term_info::TermInfoReader,
+    segment::{
+        delete::DeleteBitmapReader, field_norm::FieldNormReader, growing::GrowingSegmentReader,
+        meta::MetaPageData, payload::PayloadReader, sealed::SealedSegmentReader,
+        term_stat::TermStatReader,
+    },
     utils::topk_computer::TopKComputer,
     weight::{bm25_score_batch, idf, Bm25Weight},
 };
@@ -22,7 +23,7 @@ enum Scanner {
         query_vector: Bm25VectorOutput,
     },
     Scanned {
-        cached_results: Vec<u64>,
+        results: Vec<u64>,
     },
 }
 
@@ -78,10 +79,10 @@ pub unsafe extern "C" fn amgettuple(
     scan: pgrx::pg_sys::IndexScanDesc,
     direction: pgrx::pg_sys::ScanDirection::Type,
 ) -> bool {
-    assert!(
-        direction == pgrx::pg_sys::ScanDirection::ForwardScanDirection,
-        "only support forward scan"
-    );
+    if direction != pgrx::pg_sys::ScanDirection::ForwardScanDirection {
+        pgrx::error!("bm25 index without a forward scan direction is not supported");
+    }
+
     let scanner = unsafe { (*scan).opaque.cast::<Scanner>().as_mut().unwrap() };
     let results = match scanner {
         Scanner::Initial => return false,
@@ -90,15 +91,13 @@ pub unsafe extern "C" fn amgettuple(
             query_vector,
         } => {
             let results = scan_main(query_index.as_ptr(), query_vector.borrow());
-            *scanner = Scanner::Scanned {
-                cached_results: results,
-            };
-            let Scanner::Scanned { cached_results } = scanner else {
+            *scanner = Scanner::Scanned { results };
+            let Scanner::Scanned { results } = scanner else {
                 unreachable!()
             };
-            cached_results
+            results
         }
-        Scanner::Scanned { cached_results } => cached_results,
+        Scanner::Scanned { results } => results,
     };
 
     if let Some(tid) = results.pop() {
@@ -124,15 +123,19 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
     let avgdl = meta.avgdl();
 
     let mut computer = TopKComputer::new(BM25_LIMIT.get() as _);
+    let delete_bitmap_reader = DeleteBitmapReader::new(index, meta.delete_bitmap_blkno);
 
-    let term_info_reader = TermInfoReader::new(index, meta.term_info_blkno);
-    if let Some(growing) = GrowingSegmentReader::new(index, meta) {
-        let mut doc_id = meta.sealed_doc_cnt;
-        let mut iter = growing.into_iter();
+    let term_stat_reader = TermStatReader::new(index, meta.term_stat_blkno);
+    if let Some(growing) = meta.growing_segment.as_ref() {
+        let reader = GrowingSegmentReader::new(index, growing);
+        let mut doc_id = meta.sealed_doc_id;
+        let mut iter = reader.into_iter();
         while let Some(vector) = iter.next() {
-            let score =
-                bm25_score_batch(meta.doc_cnt, avgdl, &term_info_reader, vector, query_vector);
-            computer.push(score, doc_id);
+            if !delete_bitmap_reader.is_delete(doc_id) {
+                let score =
+                    bm25_score_batch(meta.doc_cnt, avgdl, &term_stat_reader, vector, query_vector);
+                computer.push(score, doc_id);
+            }
             doc_id += 1;
         }
     }
@@ -143,7 +146,7 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
         .iter()
         .zip(query_vector.values())
         .map(|(&term_id, &term_tf)| {
-            let term_cnt = term_info_reader.read(term_id);
+            let term_cnt = term_stat_reader.read(term_id);
             let idf = idf(meta.doc_cnt, term_cnt);
             Bm25Weight::new(term_tf, idf, avgdl)
         })
@@ -170,10 +173,16 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
             block_wand_single(
                 scorers.into_iter().next().unwrap(),
                 &fieldnorm_reader,
+                &delete_bitmap_reader,
                 &mut computer,
             );
         } else {
-            block_wand(scorers, &fieldnorm_reader, &mut computer);
+            block_wand(
+                scorers,
+                &fieldnorm_reader,
+                &delete_bitmap_reader,
+                &mut computer,
+            );
         }
     }
 

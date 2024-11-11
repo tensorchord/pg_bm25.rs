@@ -1,4 +1,7 @@
 statement ok
+SET search_path TO pg_temp, bm25_catalog;
+
+statement ok
 CREATE TABLE documents (
     id SERIAL PRIMARY KEY,
     passage TEXT

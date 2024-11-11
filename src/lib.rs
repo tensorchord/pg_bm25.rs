@@ -5,14 +5,10 @@
 
 pub mod algorithm;
 pub mod datatype;
-pub mod field_norm;
 pub mod guc;
 pub mod index;
 pub mod page;
-pub mod payload;
-pub mod postings;
-pub mod segments;
-pub mod term_info;
+pub mod segment;
 pub mod token;
 pub mod utils;
 pub mod weight;

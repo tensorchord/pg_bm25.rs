@@ -1,6 +1,11 @@
-use crate::page::page_read;
+use crate::{
+    page::page_read,
+    segment::{meta::MetaPageData, page_alloc_from_free_list},
+};
 
-use super::{bm25_page_size, page_alloc, page_write, PageFlags, PageReadGuard, PageWriteGuard};
+use super::{
+    bm25_page_size, page_alloc_init_forknum, page_write, PageFlags, PageReadGuard, PageWriteGuard,
+};
 
 const DIRECT_COUNT: usize = bm25_page_size() / 4;
 const INDIRECT1_COUNT: usize = DIRECT_COUNT * DIRECT_COUNT;
@@ -39,7 +44,7 @@ impl VirtualPageReader {
         f(data);
     }
 
-    fn get_block_id(&self, virtual_id: u32) -> u32 {
+    pub fn get_block_id(&self, virtual_id: u32) -> u32 {
         let mut virtual_id = virtual_id as usize;
         if virtual_id < DIRECT_COUNT {
             let slice = &self.direct_inode.content[virtual_id * 4..][..4];
@@ -77,32 +82,58 @@ impl VirtualPageReader {
 }
 
 enum VirtualPageWriterState {
-    Empty,
     Direct([PageWriteGuard; 2]),
     Indirect1([PageWriteGuard; 3]),
     Indirect2([PageWriteGuard; 4]),
 }
 
-pub struct VirtualPageWriter {
+pub struct VirtualPageWriter<'a> {
     relation: pgrx::pg_sys::Relation,
+    meta: &'a mut MetaPageData,
     flag: PageFlags,
     skip_lock_rel: bool,
     first_blkno: pgrx::pg_sys::BlockNumber,
     state: VirtualPageWriterState,
 }
 
-impl VirtualPageWriter {
-    pub fn new(relation: pgrx::pg_sys::Relation, flag: PageFlags, skip_lock_rel: bool) -> Self {
+impl<'a> VirtualPageWriter<'a> {
+    pub fn init_fork(relation: pgrx::pg_sys::Relation, flag: PageFlags) -> u32 {
+        let mut direct_inode = page_alloc_init_forknum(relation, flag);
+        let data_page = page_alloc_init_forknum(relation, flag);
+        let first_blkno = direct_inode.blkno();
+        direct_inode.freespace_mut()[..4].copy_from_slice(&data_page.blkno().to_le_bytes());
+        direct_inode.header.pd_lower += 4;
+        first_blkno
+    }
+
+    pub fn new(
+        relation: pgrx::pg_sys::Relation,
+        meta: &'a mut MetaPageData,
+        flag: PageFlags,
+        skip_lock_rel: bool,
+    ) -> Self {
+        let mut direct_inode = page_alloc_from_free_list(relation, meta, flag, skip_lock_rel);
+        let data_page = page_alloc_from_free_list(relation, meta, flag, skip_lock_rel);
+        let first_blkno = direct_inode.blkno();
+        direct_inode.freespace_mut()[..4].copy_from_slice(&data_page.blkno().to_le_bytes());
+        direct_inode.header.pd_lower += 4;
+
         Self {
             relation,
+            meta,
             flag,
             skip_lock_rel,
-            first_blkno: pgrx::pg_sys::InvalidBlockNumber,
-            state: VirtualPageWriterState::Empty,
+            first_blkno,
+            state: VirtualPageWriterState::Direct([data_page, direct_inode]),
         }
     }
 
-    pub fn open(relation: pgrx::pg_sys::Relation, first_blkno: u32, skip_lock_rel: bool) -> Self {
+    pub fn open(
+        relation: pgrx::pg_sys::Relation,
+        meta: &'a mut MetaPageData,
+        first_blkno: u32,
+        skip_lock_rel: bool,
+    ) -> Self {
         let direct_inode = page_read(relation, first_blkno);
         let flag = direct_inode.opaque.page_flag;
         let indirect1_blkno = direct_inode.opaque.next_blkno;
@@ -115,6 +146,7 @@ impl VirtualPageWriter {
             let data_page = page_write(relation, data_page_id);
             return Self {
                 relation,
+                meta,
                 flag,
                 skip_lock_rel,
                 first_blkno,
@@ -137,6 +169,7 @@ impl VirtualPageWriter {
             let data_page = page_write(relation, data_page_id);
             return Self {
                 relation,
+                meta,
                 flag,
                 skip_lock_rel,
                 first_blkno,
@@ -163,6 +196,7 @@ impl VirtualPageWriter {
         let data_page = page_write(relation, data_page_id);
         Self {
             relation,
+            meta,
             flag,
             skip_lock_rel,
             first_blkno,
@@ -194,16 +228,24 @@ impl VirtualPageWriter {
         }
     }
 
+    // it will make sure the data is on the same page
+    pub fn write_no_cross(&mut self, data: &[u8]) {
+        assert!(data.len() <= bm25_page_size());
+        let mut space = self.freespace_mut();
+        if space.len() < data.len() {
+            self.new_page();
+            space = self.freespace_mut();
+        }
+        space[..data.len()].copy_from_slice(data);
+        *self.offset() += data.len() as u16;
+    }
+
     fn offset(&mut self) -> &mut u16 {
         &mut self.data_page().header.pd_lower
     }
 
     fn freespace_mut(&mut self) -> &mut [u8] {
-        if matches!(self.state, VirtualPageWriterState::Empty) {
-            self.new_page();
-        }
         match &mut self.state {
-            VirtualPageWriterState::Empty => unreachable!(),
             VirtualPageWriterState::Direct([page, _]) => page.freespace_mut(),
             VirtualPageWriterState::Indirect1([page, _, _]) => page.freespace_mut(),
             VirtualPageWriterState::Indirect2([page, _, _, _]) => page.freespace_mut(),
@@ -212,16 +254,13 @@ impl VirtualPageWriter {
 
     fn new_page(&mut self) {
         match &mut self.state {
-            VirtualPageWriterState::Empty => {
-                let mut direct_inode = page_alloc(self.relation, self.flag, self.skip_lock_rel);
-                let data_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
-                self.first_blkno = direct_inode.blkno();
-                direct_inode.freespace_mut()[..4].copy_from_slice(&data_page.blkno().to_le_bytes());
-                direct_inode.header.pd_lower += 4;
-                self.state = VirtualPageWriterState::Direct([data_page, direct_inode]);
-            }
             VirtualPageWriterState::Direct([old_data_page, direct_inode]) => {
-                let data_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let data_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 old_data_page.opaque.next_blkno = data_page.blkno();
                 let inode_space = direct_inode.freespace_mut();
                 if inode_space.len() >= 4 {
@@ -231,9 +270,19 @@ impl VirtualPageWriter {
                     return;
                 }
 
-                let mut indirect1_inode = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let mut indirect1_inode = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 direct_inode.opaque.next_blkno = indirect1_inode.blkno();
-                let mut indirect1_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let mut indirect1_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 indirect1_inode.freespace_mut()[..4]
                     .copy_from_slice(&data_page.blkno().to_le_bytes());
                 indirect1_inode.header.pd_lower += 4;
@@ -244,7 +293,12 @@ impl VirtualPageWriter {
                     VirtualPageWriterState::Indirect1([data_page, indirect1_page, indirect1_inode]);
             }
             VirtualPageWriterState::Indirect1([old_data_page, indirect1_page, indirect1_inode]) => {
-                let data_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let data_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 old_data_page.opaque.next_blkno = data_page.blkno();
                 let inode_space = indirect1_page.freespace_mut();
                 if inode_space.len() >= 4 {
@@ -254,8 +308,12 @@ impl VirtualPageWriter {
                     return;
                 }
 
-                let mut new_indirect1_page =
-                    page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let mut new_indirect1_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 new_indirect1_page.freespace_mut()[..4]
                     .copy_from_slice(&data_page.blkno().to_le_bytes());
                 new_indirect1_page.header.pd_lower += 4;
@@ -268,9 +326,19 @@ impl VirtualPageWriter {
                     return;
                 }
 
-                let mut indirect2_inode = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let mut indirect2_inode = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 indirect1_inode.opaque.next_blkno = indirect2_inode.blkno();
-                let mut indirect2_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let mut indirect2_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 indirect2_inode.freespace_mut()[..4]
                     .copy_from_slice(&indirect2_page.blkno().to_le_bytes());
                 indirect2_inode.header.pd_lower += 4;
@@ -287,7 +355,12 @@ impl VirtualPageWriter {
             VirtualPageWriterState::Indirect2(
                 [old_data_page, indirect1_page, indirect2_page, indirect2_inode],
             ) => {
-                let data_page = page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let data_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 old_data_page.opaque.next_blkno = data_page.blkno();
                 let inode_space = indirect1_page.freespace_mut();
                 if inode_space.len() >= 4 {
@@ -297,8 +370,12 @@ impl VirtualPageWriter {
                     return;
                 }
 
-                let mut new_indirect1_page =
-                    page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let mut new_indirect1_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 new_indirect1_page.freespace_mut()[..4]
                     .copy_from_slice(&data_page.blkno().to_le_bytes());
                 new_indirect1_page.header.pd_lower += 4;
@@ -311,8 +388,12 @@ impl VirtualPageWriter {
                     return;
                 }
 
-                let mut new_indirect2_page =
-                    page_alloc(self.relation, self.flag, self.skip_lock_rel);
+                let mut new_indirect2_page = page_alloc_from_free_list(
+                    self.relation,
+                    self.meta,
+                    self.flag,
+                    self.skip_lock_rel,
+                );
                 new_indirect2_page.freespace_mut()[..4]
                     .copy_from_slice(&new_indirect1_page.blkno().to_le_bytes());
                 new_indirect2_page.header.pd_lower += 4;
@@ -333,7 +414,6 @@ impl VirtualPageWriter {
 
     fn data_page(&mut self) -> &mut PageWriteGuard {
         match &mut self.state {
-            VirtualPageWriterState::Empty => unreachable!(),
             VirtualPageWriterState::Direct(pages) => &mut pages[0],
             VirtualPageWriterState::Indirect1(pages) => &mut pages[0],
             VirtualPageWriterState::Indirect2(pages) => &mut pages[0],

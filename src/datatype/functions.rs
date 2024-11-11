@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, num::NonZero};
 
 use crate::{
     page::{page_read, METAPAGE_BLKNO},
-    segments::meta::MetaPageData,
-    term_info::TermInfoReader,
+    segment::meta::MetaPageData,
+    segment::term_stat::TermStatReader,
     weight::bm25_score_batch,
 };
 
@@ -54,12 +54,12 @@ pub fn search_bm25query(
         unsafe { &*(page.data().as_ptr() as *const MetaPageData) }
     };
 
-    let term_info_reader = TermInfoReader::new(index.as_ptr(), meta.term_info_blkno);
-    let avgdl = meta.doc_term_cnt as f32 / meta.doc_cnt as f32;
+    let term_stat_reader = TermStatReader::new(index.as_ptr(), meta.term_stat_blkno);
+    let avgdl = meta.avgdl();
     let scores = bm25_score_batch(
         meta.doc_cnt,
         avgdl,
-        &term_info_reader,
+        &term_stat_reader,
         target_vector,
         query_vector,
     );

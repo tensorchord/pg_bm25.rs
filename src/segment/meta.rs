@@ -9,10 +9,13 @@ pub struct MetaPageData {
     pub version: u32,
     pub doc_cnt: u32,
     pub doc_term_cnt: u64,
+    pub sealed_doc_id: u32,
+    pub current_doc_id: u32,
     pub field_norm_blkno: u32,
     pub payload_blkno: u32,
-    pub term_info_blkno: u32,
-    pub sealed_doc_cnt: u32,
+    pub term_stat_blkno: u32,
+    pub delete_bitmap_blkno: u32,
+    pub free_page_blkno: u32,
     pub growing_segment: Option<GrowingSegmentData>,
     pub sealed_length: u32,
     pub sealed_segment: [SealedSegmentData; 0],
@@ -24,10 +27,12 @@ impl std::fmt::Debug for MetaPageData {
             .field("version", &self.version)
             .field("doc_cnt", &self.doc_cnt)
             .field("doc_term_cnt", &self.doc_term_cnt)
+            .field("sealed_doc_cnt", &self.sealed_doc_id)
+            .field("current_doc_id", &self.current_doc_id)
             .field("field_norm_blkno", &self.field_norm_blkno)
             .field("payload_blkno", &self.payload_blkno)
-            .field("term_info_blkno", &self.term_info_blkno)
-            .field("sealed_doc_cnt", &self.sealed_doc_cnt)
+            .field("term_info_blkno", &self.term_stat_blkno)
+            .field("free_page_blkno", &self.free_page_blkno)
             .field("growing_segment", &self.growing_segment)
             .field("sealed_length", &self.sealed_length)
             .field("sealed_segment", &self.sealed_segment())
@@ -47,18 +52,19 @@ impl MetaPageData {
     }
 }
 
-pub fn metapage_update_sealed_segment(this: &mut PageData, sealed_segment: &[SealedSegmentData]) {
+pub fn metapage_append_sealed_segment(this: &mut PageData, sealed_segment: SealedSegmentData) {
+    let meta: &mut MetaPageData = this.as_mut();
+    let len = meta.sealed_length + 1;
+    meta.sealed_length = len;
+    unsafe {
+        let sealed_ptr = meta.sealed_segment.as_mut_ptr();
+        sealed_ptr.add(len as usize - 1).write(sealed_segment);
+    }
+
     let mut layout = Layout::new::<MetaPageData>();
-    let layout_sealed = Layout::array::<SealedSegmentData>(sealed_segment.len()).unwrap();
+    let layout_sealed = Layout::array::<SealedSegmentData>(len as usize).unwrap();
     layout = layout.extend(layout_sealed).unwrap().0.pad_to_align();
     assert!(layout.size() <= bm25_page_size());
-
-    let ptr = this.content.as_mut_ptr() as *mut MetaPageData;
-    unsafe {
-        (*ptr).sealed_length = sealed_segment.len() as u32;
-        let sealed_ptr = (*ptr).sealed_segment.as_mut_ptr();
-        std::ptr::copy_nonoverlapping(sealed_segment.as_ptr(), sealed_ptr, sealed_segment.len());
-    }
 
     this.header.pd_lower =
         layout.size() as u16 + std::mem::size_of::<pgrx::pg_sys::PageHeaderData>() as u16;

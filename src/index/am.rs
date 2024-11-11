@@ -5,6 +5,7 @@ use super::{
     insert::aminsert,
     options::amoptions,
     scan::{ambeginscan, amendscan, amgettuple, amrescan},
+    vacuum::{ambulkdelete, amvacuumcleanup},
 };
 
 #[pgrx::pg_extern(sql = "\
@@ -89,23 +90,4 @@ pub unsafe extern "C" fn ampropety(
         return true;
     }
     false
-}
-
-#[allow(unused_variables)]
-#[pgrx::pg_guard]
-pub unsafe extern "C" fn ambulkdelete(
-    info: *mut pgrx::pg_sys::IndexVacuumInfo,
-    stats: *mut pgrx::pg_sys::IndexBulkDeleteResult,
-    callback: pgrx::pg_sys::IndexBulkDeleteCallback,
-    callback_state: *mut std::os::raw::c_void,
-) -> *mut pgrx::pg_sys::IndexBulkDeleteResult {
-    std::ptr::null_mut()
-}
-
-#[pgrx::pg_guard]
-pub unsafe extern "C" fn amvacuumcleanup(
-    _info: *mut pgrx::pg_sys::IndexVacuumInfo,
-    _stats: *mut pgrx::pg_sys::IndexBulkDeleteResult,
-) -> *mut pgrx::pg_sys::IndexBulkDeleteResult {
-    std::ptr::null_mut()
 }

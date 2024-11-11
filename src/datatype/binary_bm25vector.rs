@@ -5,7 +5,7 @@ use pgrx::{pg_sys::Oid, Internal};
 
 use crate::datatype::bm25vector::Bm25VectorBorrowed;
 
-use super::binary::Bytea;
+use super::bytea::Bytea;
 use super::memory_bm25vector::Bm25VectorInput;
 use super::memory_bm25vector::Bm25VectorOutput;
 
