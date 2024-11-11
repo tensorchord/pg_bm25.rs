@@ -347,12 +347,11 @@ pub fn page_alloc_init_forknum(
 ) -> PageWriteGuard {
     unsafe {
         use pgrx::pg_sys::{
-            ExclusiveLock, ForkNumber, GenericXLogRegisterBuffer, GenericXLogStart, LockBuffer,
-            LockRelationForExtension, ReadBuffer, ReadBufferMode, UnlockRelationForExtension,
-            BUFFER_LOCK_EXCLUSIVE, GENERIC_XLOG_FULL_IMAGE,
+            ForkNumber, GenericXLogRegisterBuffer, GenericXLogStart, LockBuffer,
+            ReadBufferExtended, ReadBufferMode, BUFFER_LOCK_EXCLUSIVE, GENERIC_XLOG_FULL_IMAGE,
         };
         let buf = ReadBufferExtended(
-            index,
+            relation,
             ForkNumber::INIT_FORKNUM,
             P_NEW,
             ReadBufferMode::RBM_NORMAL,

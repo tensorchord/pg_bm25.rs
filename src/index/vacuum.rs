@@ -14,7 +14,6 @@ use crate::{
     },
 };
 
-#[allow(unused_variables)]
 #[pgrx::pg_guard]
 pub unsafe extern "C" fn ambulkdelete(
     info: *mut pgrx::pg_sys::IndexVacuumInfo,
@@ -32,7 +31,17 @@ pub unsafe extern "C" fn ambulkdelete(
     };
 
     let index = (*info).index;
-    let heap = (*info).heaprel;
+    let heap;
+    #[cfg(any(feature = "pg14", feature = "pg15"))]
+    {
+        let heap_oid = (*(*index).rd_index).indrelid;
+        heap = pgrx::pg_sys::relation_open(heap_oid, pgrx::pg_sys::AccessShareLock as _);
+    }
+    #[cfg(any(feature = "pg16", feature = "pg17"))]
+    {
+        heap = (*info).heaprel;
+    }
+
     let mut metapage = page_write(index, METAPAGE_BLKNO);
     let meta: &mut MetaPageData = metapage.as_mut();
     let term_info_reader = TermStatReader::new(index, meta.term_stat_blkno);
@@ -64,6 +73,11 @@ pub unsafe extern "C" fn ambulkdelete(
                 });
             }
         }
+    }
+
+    #[cfg(any(feature = "pg14", feature = "pg15"))]
+    {
+        pgrx::pg_sys::relation_close(heap, pgrx::pg_sys::AccessShareLock as _);
     }
 
     std::ptr::null_mut()
