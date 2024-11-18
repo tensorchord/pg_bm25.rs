@@ -1,5 +1,3 @@
-#![feature(raw_ref_op)]
-#![feature(new_uninit)]
 #![feature(doc_cfg)]
 #![allow(clippy::len_without_is_empty)]
 
