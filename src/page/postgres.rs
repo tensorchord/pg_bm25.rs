@@ -439,8 +439,8 @@ pub fn page_get_item<T>(page: &PageData, item_id: pgrx::pg_sys::ItemIdData) -> &
 pub fn page_append_item(page: &mut PageData, item: &[u8]) -> bool {
     let offset_number = unsafe {
         pgrx::pg_sys::PageAddItemExtended(
-            page as *mut _ as *mut i8,
-            item.as_ptr() as *const i8 as *mut i8,
+            page as *mut _ as _,
+            item.as_ptr() as *const _ as _,
             item.len(),
             pgrx::pg_sys::InvalidOffsetNumber,
             0,
