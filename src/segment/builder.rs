@@ -2,7 +2,6 @@ use crate::datatype::Bm25VectorBorrowed;
 
 use super::{
     field_norm::FieldNormWriter,
-    meta::MetaPageData,
     payload::PayloadWriter,
     posting::{InvertedSerializer, PostingsWriter, TERMINATED_DOC},
     sealed::SealedSegmentData,
@@ -44,13 +43,9 @@ impl IndexBuilder {
     }
 
     // return (payload_blkno, field_norm_blkno, sealed_data)
-    pub fn serialize(
-        &self,
-        index: pgrx::pg_sys::Relation,
-        meta: &mut MetaPageData,
-    ) -> (u32, u32, SealedSegmentData) {
-        let payload_blkno = self.payload_writer.serialize(index, meta);
-        let field_norm_blkno = self.field_norm_writer.serialize(index, meta);
+    pub fn serialize(&self, index: pgrx::pg_sys::Relation) -> (u32, u32, SealedSegmentData) {
+        let payload_blkno = self.payload_writer.serialize(index);
+        let field_norm_blkno = self.field_norm_writer.serialize(index);
 
         let mut postings_serializer = InvertedSerializer::new(
             index,
@@ -58,9 +53,8 @@ impl IndexBuilder {
             self.doc_term_cnt as f32 / self.doc_cnt as f32,
             self.field_norm_writer.to_memory_reader(),
         );
-        self.postings_writer
-            .serialize(meta, &mut postings_serializer);
-        let term_info_blkno = postings_serializer.finalize(meta);
+        self.postings_writer.serialize(&mut postings_serializer);
+        let term_info_blkno = postings_serializer.finalize();
         let sealed_data = SealedSegmentData { term_info_blkno };
 
         (payload_blkno, field_norm_blkno, sealed_data)

@@ -1,9 +1,6 @@
 use super::InvertedSerializer;
 use crate::{
-    datatype::Bm25VectorBorrowed,
-    segment::{field_norm::FieldNormRead, meta::MetaPageData},
-    token::vocab_len,
-    utils::vint,
+    datatype::Bm25VectorBorrowed, segment::field_norm::FieldNormRead, token::vocab_len, utils::vint,
 };
 
 // postings in ram
@@ -35,17 +32,13 @@ impl PostingsWriter {
         }
     }
 
-    pub fn serialize<R: FieldNormRead>(
-        &self,
-        meta: &mut MetaPageData,
-        s: &mut InvertedSerializer<R>,
-    ) {
+    pub fn serialize<R: FieldNormRead>(&self, s: &mut InvertedSerializer<R>) {
         for recorder in &self.term_index {
             s.new_term(recorder.total_docs);
             for (doc_id, tf) in recorder.iter() {
                 s.write_doc(doc_id, tf);
             }
-            s.close_term(meta);
+            s.close_term();
         }
     }
 

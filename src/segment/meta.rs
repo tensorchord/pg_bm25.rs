@@ -15,7 +15,6 @@ pub struct MetaPageData {
     pub payload_blkno: u32,
     pub term_stat_blkno: u32,
     pub delete_bitmap_blkno: u32,
-    pub free_page_blkno: u32,
     pub growing_segment: Option<GrowingSegmentData>,
     pub sealed_length: u32,
     pub sealed_segment: [SealedSegmentData; 0],
@@ -32,7 +31,7 @@ impl std::fmt::Debug for MetaPageData {
             .field("field_norm_blkno", &self.field_norm_blkno)
             .field("payload_blkno", &self.payload_blkno)
             .field("term_info_blkno", &self.term_stat_blkno)
-            .field("free_page_blkno", &self.free_page_blkno)
+            .field("delete_bitmap_blkno", &self.delete_bitmap_blkno)
             .field("growing_segment", &self.growing_segment)
             .field("sealed_length", &self.sealed_length)
             .field("sealed_segment", &self.sealed_segment())

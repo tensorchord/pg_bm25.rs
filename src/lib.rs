@@ -29,19 +29,19 @@ unsafe extern "C" fn _PG_init() {
     guc::init();
 }
 
-const SCHEMA: &str = "bm25_catalog";
+// const SCHEMA: &str = "bm25_catalog";
 
-const SCHEMA_C_BYTES: [u8; SCHEMA.len() + 1] = {
-    let mut bytes = [0u8; SCHEMA.len() + 1];
-    let mut i = 0_usize;
-    while i < SCHEMA.len() {
-        bytes[i] = SCHEMA.as_bytes()[i];
-        i += 1;
-    }
-    bytes
-};
+// const SCHEMA_C_BYTES: [u8; SCHEMA.len() + 1] = {
+//     let mut bytes = [0u8; SCHEMA.len() + 1];
+//     let mut i = 0_usize;
+//     while i < SCHEMA.len() {
+//         bytes[i] = SCHEMA.as_bytes()[i];
+//         i += 1;
+//     }
+//     bytes
+// };
 
-const SCHEMA_C_STR: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(&SCHEMA_C_BYTES) {
-    Ok(x) => x,
-    Err(_) => panic!("there are null characters in schema"),
-};
+// const SCHEMA_C_STR: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(&SCHEMA_C_BYTES) {
+//     Ok(x) => x,
+//     Err(_) => panic!("there are null characters in schema"),
+// };

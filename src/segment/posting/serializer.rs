@@ -1,9 +1,6 @@
 use crate::{
     page::{PageFlags, VirtualPageWriter},
-    segment::{
-        field_norm::{id_to_fieldnorm, FieldNormRead, MAX_FIELD_NORM},
-        meta::MetaPageData,
-    },
+    segment::field_norm::{id_to_fieldnorm, FieldNormRead, MAX_FIELD_NORM},
     token::vocab_len,
     utils::compress_block::BlockEncoder,
     weight::{idf, Bm25Weight},
@@ -47,16 +44,16 @@ impl<R: FieldNormRead> InvertedSerializer<R> {
         self.postings_serializer.write_doc(doc_id, freq);
     }
 
-    pub fn close_term(&mut self, meta: &mut MetaPageData) {
+    pub fn close_term(&mut self) {
         if self.current_term_info.doc_count != 0 {
-            self.current_term_info.postings_blkno = self.postings_serializer.close_term(meta);
+            self.current_term_info.postings_blkno = self.postings_serializer.close_term();
         }
         self.term_info_serializer.push(self.current_term_info);
     }
 
     /// return term_info_blkno
-    pub fn finalize(self, meta: &mut MetaPageData) -> pgrx::pg_sys::BlockNumber {
-        self.term_info_serializer.finalize(meta)
+    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
+        self.term_info_serializer.finalize()
     }
 }
 
@@ -77,8 +74,8 @@ impl PostingTermInfoSerializer {
         self.term_infos.push(term_info);
     }
 
-    pub fn finalize(self, meta: &mut MetaPageData) -> pgrx::pg_sys::BlockNumber {
-        let mut pager = VirtualPageWriter::new(self.index, meta, PageFlags::POSTINGS, true);
+    pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
+        let mut pager = VirtualPageWriter::new(self.index, PageFlags::POSTINGS, true);
         pager.write(bytemuck::cast_slice(&self.term_infos));
         pager.finalize()
     }
@@ -138,7 +135,7 @@ impl<R: FieldNormRead> PostingSerializer<R> {
         }
     }
 
-    pub fn close_term(&mut self, meta: &mut MetaPageData) -> pgrx::pg_sys::BlockNumber {
+    pub fn close_term(&mut self) -> pgrx::pg_sys::BlockNumber {
         if self.block_size > 0 {
             if self.block_size == COMPRESSION_BLOCK_SIZE {
                 self.flush_block();
@@ -146,7 +143,7 @@ impl<R: FieldNormRead> PostingSerializer<R> {
                 self.flush_block_unfull();
             }
         }
-        let mut pager = VirtualPageWriter::new(self.index, meta, PageFlags::POSTINGS, true);
+        let mut pager = VirtualPageWriter::new(self.index, PageFlags::POSTINGS, true);
         pager.write(bytemuck::cast_slice(self.skip_write.as_slice()));
         let mut offset = 0;
         for skip in self.skip_write.iter().take(self.skip_write.len() - 1) {

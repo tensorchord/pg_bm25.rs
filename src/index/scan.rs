@@ -129,7 +129,7 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
     if let Some(growing) = meta.growing_segment.as_ref() {
         let reader = GrowingSegmentReader::new(index, growing);
         let mut doc_id = meta.sealed_doc_id;
-        let mut iter = reader.into_iter();
+        let mut iter = reader.into_iter(u32::MAX);
         while let Some(vector) = iter.next() {
             if !delete_bitmap_reader.is_delete(doc_id) {
                 let score =
@@ -152,7 +152,9 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
         })
         .collect::<Vec<_>>();
 
-    for &sealed_data in meta.sealed_segment() {
+    let mut sealed_sgement = meta.sealed_segment().to_vec();
+    sealed_sgement.reverse();
+    for sealed_data in sealed_sgement {
         let sealed_reader = SealedSegmentReader::new(index, sealed_data);
         let term_ids = query_vector.indexes();
         let mut scorers = Vec::new();

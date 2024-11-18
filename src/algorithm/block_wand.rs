@@ -9,7 +9,7 @@ use crate::{
 };
 
 pub struct SealedScorer {
-    pub posting: PostingReader,
+    pub posting: PostingReader<true>,
     pub weight: Bm25Weight,
     pub max_score: f32,
 }
