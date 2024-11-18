@@ -57,6 +57,8 @@ impl TopKComputer {
 mod tests {
     use std::collections::BinaryHeap;
 
+    use rand::seq::SliceRandom as _;
+
     use super::*;
 
     #[derive(PartialEq)]
@@ -83,8 +85,14 @@ mod tests {
         let mut topk = TopKComputer::new(20);
         let mut reference = BinaryHeap::new();
 
-        for _ in 0..100000 {
-            let score = rand::random::<f32>();
+        let mut scores = (0..100000)
+            .map(|_| rand::random::<f32>())
+            .collect::<Vec<_>>();
+        scores.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        scores.dedup();
+        scores.shuffle(&mut rand::thread_rng());
+
+        for score in scores {
             let id = rand::random::<u32>();
             topk.push(score, id);
             reference.push(Cmp(score, id));
@@ -93,7 +101,7 @@ mod tests {
             }
         }
 
-        let topk = topk.to_sorted_slice();
+        let topk = topk.to_sorted_slice().to_vec();
         let mut reference = reference.into_sorted_vec();
         reference.reverse();
         println!(
