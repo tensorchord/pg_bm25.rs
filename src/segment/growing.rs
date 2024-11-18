@@ -1,32 +1,24 @@
-use std::num::NonZero;
-
 use crate::{
     datatype::{Bm25VectorBorrowed, Bm25VectorHeader, Bm25VectorInput},
-    guc::SEGMENT_GROWING_MAX_SIZE,
+    guc::SEGMENT_GROWING_MAX_PAGE_SIZE,
     page::{
-        page_append_item, page_get_item, page_get_item_id, page_get_max_offset_number, page_read,
-        page_write, PageData, PageFlags, PageReadGuard,
+        page_alloc_with_fsm, page_append_item, page_free, page_get_item, page_get_item_id,
+        page_get_max_offset_number, page_read, page_write, PageFlags, PageReadGuard,
     },
-    segment::{
-        field_norm::{fieldnorm_to_id, FieldNormRead},
-        page_alloc_from_free_list,
-        sealed::SealedSegmentWriter,
-    },
+    segment::sealed::SealedSegmentWriter,
 };
 
 use super::{
-    field_norm::FieldNormReader,
-    free_segment,
-    meta::{metapage_append_sealed_segment, MetaPageData},
-    posting::InvertedSerializer,
+    field_norm::FieldNormReader, meta::MetaPageData, posting::InvertedSerializer,
     sealed::SealedSegmentData,
 };
 
 /// store bm25vector
 #[derive(Debug, Clone, Copy)]
 pub struct GrowingSegmentData {
-    first_blkno: NonZero<pgrx::pg_sys::BlockNumber>,
-    last_blkno: pgrx::pg_sys::BlockNumber,
+    pub first_blkno: pgrx::pg_sys::BlockNumber,
+    pub last_blkno: pgrx::pg_sys::BlockNumber,
+    pub growing_full_page_count: u32,
 }
 
 pub struct GrowingSegmentReader {
@@ -40,18 +32,20 @@ pub struct GrowingSegmentIterator {
     page: Option<PageReadGuard>,
     offset: u16,
     count: u16,
+    page_count: u32,
+    max_page_count: u32,
 }
 
 impl GrowingSegmentReader {
     pub fn new(index: pgrx::pg_sys::Relation, data: &GrowingSegmentData) -> Self {
         Self {
             index,
-            blkno: data.first_blkno.get(),
+            blkno: data.first_blkno,
         }
     }
 
     #[allow(clippy::should_implement_trait)]
-    pub fn into_iter(self) -> GrowingSegmentIterator {
+    pub fn into_iter(self, max_page_count: u32) -> GrowingSegmentIterator {
         let GrowingSegmentReader { index, blkno } = self;
         let page = page_read(index, blkno);
         let count = page_get_max_offset_number(&page);
@@ -61,6 +55,8 @@ impl GrowingSegmentReader {
             page: Some(page),
             offset: 1,
             count,
+            page_count: 0,
+            max_page_count,
         }
     }
 }
@@ -75,6 +71,12 @@ impl GrowingSegmentIterator {
         if self.offset > self.count {
             self.blkno = self.page().opaque.next_blkno;
             if self.blkno == pgrx::pg_sys::InvalidBlockNumber {
+                self.page = None;
+                return None;
+            }
+            self.page_count += 1;
+            if self.page_count == self.max_page_count {
+                self.blkno = pgrx::pg_sys::InvalidBlockNumber;
                 self.page = None;
                 return None;
             }
@@ -94,98 +96,74 @@ impl GrowingSegmentIterator {
     }
 }
 
-pub fn free_growing_segment(
-    index: pgrx::pg_sys::Relation,
-    meta: &mut MetaPageData,
-    growing_segment: GrowingSegmentData,
-) {
-    free_segment(index, meta, growing_segment.first_blkno.get());
+pub fn free_growing_segment(index: pgrx::pg_sys::Relation, growing_segment: GrowingSegmentData) {
+    page_free(index, growing_segment.first_blkno);
 }
 
 /// - if no growing segment, create one
+/// - append to the last page
 /// - if growing segment is full, seal it
-/// - otherwise, append to the last page
 pub fn growing_segment_insert(
     index: pgrx::pg_sys::Relation,
-    metapage: &mut PageData,
+    meta: &mut MetaPageData,
     bm25vector: &Bm25VectorInput,
-) {
+) -> bool {
     let mut buf: Vec<u8> = Vec::new();
     buf.extend_from_slice(bm25vector.to_bytes());
 
-    let meta: &mut MetaPageData = metapage.as_mut();
-
-    let Some(growing_segment) = &meta.growing_segment else {
-        let mut page = page_alloc_from_free_list(index, meta, PageFlags::GROWING, false);
+    let Some(growing_segment) = &mut meta.growing_segment else {
+        let mut page = page_alloc_with_fsm(index, PageFlags::GROWING, false);
         meta.growing_segment = Some(GrowingSegmentData {
-            first_blkno: NonZero::new(page.blkno()).unwrap(),
+            first_blkno: page.blkno(),
             last_blkno: page.blkno(),
+            growing_full_page_count: 0,
         });
         let success = page_append_item(&mut page, &buf);
         assert!(success);
-        return;
+        return false;
     };
-
-    if meta.current_doc_id - meta.sealed_doc_id >= SEGMENT_GROWING_MAX_SIZE.get() as u32 {
-        let mut doc_id = meta.sealed_doc_id;
-        let mut sealed_writer = SealedSegmentWriter::new();
-        {
-            let growing_reader = GrowingSegmentReader::new(index, growing_segment);
-            let mut iter = growing_reader.into_iter();
-            while let Some(vector) = iter.next() {
-                sealed_writer.insert(doc_id, vector);
-                doc_id += 1;
-            }
-            sealed_writer.insert(doc_id, bm25vector.borrow());
-            sealed_writer.finalize_insert();
-        }
-
-        let growing_segment = *growing_segment;
-        free_growing_segment(index, meta, growing_segment);
-
-        struct FieldNormReaderTmp {
-            uninsert_doc_id: u32,
-            uninsert_field_norm: u8,
-            reader: FieldNormReader,
-        }
-
-        impl FieldNormRead for FieldNormReaderTmp {
-            fn read(&self, doc_id: u32) -> u8 {
-                if doc_id == self.uninsert_doc_id {
-                    return self.uninsert_field_norm;
-                }
-                self.reader.read(doc_id)
-            }
-        }
-
-        let fieldnorm_reader = FieldNormReader::new(index, meta.field_norm_blkno);
-        let fieldnorm_reader_tmp = FieldNormReaderTmp {
-            uninsert_doc_id: doc_id,
-            uninsert_field_norm: fieldnorm_to_id(bm25vector.borrow().doc_len()),
-            reader: fieldnorm_reader,
-        };
-        let mut serializer =
-            InvertedSerializer::new(index, meta.doc_cnt, meta.avgdl(), fieldnorm_reader_tmp);
-        sealed_writer.serialize(meta, &mut serializer);
-        let sealed_data = serializer.finalize(meta);
-
-        meta.sealed_doc_id = meta.current_doc_id;
-        meta.growing_segment = None;
-        metapage_append_sealed_segment(
-            metapage,
-            SealedSegmentData {
-                term_info_blkno: sealed_data,
-            },
-        );
-        return;
-    }
 
     let mut page = page_write(index, growing_segment.last_blkno);
     if !page_append_item(&mut page, &buf) {
-        let mut new_page = page_alloc_from_free_list(index, meta, PageFlags::GROWING, false);
+        let mut new_page = page_alloc_with_fsm(index, PageFlags::GROWING, false);
         let success = page_append_item(&mut new_page, &buf);
         assert!(success);
         page.opaque.next_blkno = new_page.blkno();
-        meta.growing_segment.as_mut().unwrap().last_blkno = new_page.blkno();
+        growing_segment.last_blkno = new_page.blkno();
+        growing_segment.growing_full_page_count += 1;
+        if growing_segment.growing_full_page_count >= SEGMENT_GROWING_MAX_PAGE_SIZE.get() as u32 {
+            return true;
+        }
     }
+    false
+}
+
+// return (sealed_segment_data, current_sealed_doc_id)
+pub fn build_sealed_segment(
+    index: pgrx::pg_sys::Relation,
+    meta: &MetaPageData,
+) -> (SealedSegmentData, u32) {
+    let mut doc_id = meta.sealed_doc_id;
+    let growing_segment = meta.growing_segment.unwrap();
+    let mut sealed_writer = SealedSegmentWriter::new();
+    {
+        let growing_reader = GrowingSegmentReader::new(index, &growing_segment);
+        let mut iter = growing_reader.into_iter(SEGMENT_GROWING_MAX_PAGE_SIZE.get() as u32);
+        while let Some(vector) = iter.next() {
+            sealed_writer.insert(doc_id, vector);
+            doc_id += 1;
+        }
+        sealed_writer.finalize_insert();
+    }
+
+    let fieldnorm_reader = FieldNormReader::new(index, meta.field_norm_blkno);
+    let mut serializer =
+        InvertedSerializer::new(index, meta.doc_cnt, meta.avgdl(), fieldnorm_reader);
+    sealed_writer.serialize(&mut serializer);
+    let sealed_blkno = serializer.finalize();
+    let sealed_data = SealedSegmentData {
+        term_info_blkno: sealed_blkno,
+    };
+
+    (sealed_data, doc_id)
 }

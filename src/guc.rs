@@ -2,7 +2,7 @@ use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting};
 
 pub static BM25_LIMIT: GucSetting<i32> = GucSetting::<i32>::new(100);
 pub static ENABLE_INDEX: GucSetting<bool> = GucSetting::<bool>::new(true);
-pub static SEGMENT_GROWING_MAX_SIZE: GucSetting<i32> = GucSetting::<i32>::new(10000);
+pub static SEGMENT_GROWING_MAX_PAGE_SIZE: GucSetting<i32> = GucSetting::<i32>::new(1000);
 
 pub unsafe fn init() {
     GucRegistry::define_int_guc(
@@ -24,10 +24,10 @@ pub unsafe fn init() {
         GucFlags::default(),
     );
     GucRegistry::define_int_guc(
-        "bm25_catalog.segment_growing_max_size",
-        "bm25 growing segment max size",
-        "The maximum size of the growing segment. When the size of the growing segment exceeds this value, the segment will be sealed into a read-only segment.",
-        &SEGMENT_GROWING_MAX_SIZE,
+        "bm25_catalog.segment_growing_max_page_size",
+        "bm25 growing segment max page size",
+        "The maximum page count of the growing segment. When the size of the growing segment exceeds this value, the segment will be sealed into a read-only segment.",
+        &SEGMENT_GROWING_MAX_PAGE_SIZE,
         1,
         1_000_000,
         GucContext::Userset,

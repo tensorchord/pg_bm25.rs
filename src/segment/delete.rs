@@ -1,9 +1,6 @@
 /// Payload segment is a global segment that stores the ctid of the documents.
 /// doc_id -> ctid mapping
-use crate::{
-    page::{VirtualPageReader, VirtualPageWriter},
-    segment::meta::MetaPageData,
-};
+use crate::page::{VirtualPageReader, VirtualPageWriter};
 
 pub struct DeleteBitmapReader(VirtualPageReader);
 
@@ -27,12 +24,11 @@ impl DeleteBitmapReader {
 
 pub fn extend_delete_bit(
     index: pgrx::pg_sys::Relation,
-    meta: &mut MetaPageData,
     blkno: pgrx::pg_sys::BlockNumber,
     doc_id: u32,
 ) {
     if doc_id % 8 == 0 {
-        let mut writer = VirtualPageWriter::open(index, meta, blkno, true);
+        let mut writer = VirtualPageWriter::open(index, blkno, true);
         writer.write(&[0]);
     }
 }

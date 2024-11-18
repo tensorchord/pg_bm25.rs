@@ -41,7 +41,6 @@ pub unsafe extern "C" fn ambuildempty(index: pgrx::pg_sys::Relation) {
             delete_bitmap_blkno,
             current_doc_id: 0,
             sealed_doc_id: 0,
-            free_page_blkno: pgrx::pg_sys::InvalidBlockNumber,
             growing_segment: None,
             sealed_length: 0,
             sealed_segment: [],
@@ -125,7 +124,6 @@ unsafe fn write_down(state: &BuildState) {
             field_norm_blkno: pgrx::pg_sys::InvalidBlockNumber,
             payload_blkno: pgrx::pg_sys::InvalidBlockNumber,
             term_stat_blkno: pgrx::pg_sys::InvalidBlockNumber,
-            free_page_blkno: pgrx::pg_sys::InvalidBlockNumber,
             delete_bitmap_blkno: pgrx::pg_sys::InvalidBlockNumber,
             current_doc_id: doc_cnt,
             sealed_doc_id: doc_cnt,
@@ -138,21 +136,20 @@ unsafe fn write_down(state: &BuildState) {
     let meta: &mut MetaPageData = meta_page.as_mut();
 
     // delete bitmap
-    let mut delete_bitmap_writer =
-        VirtualPageWriter::new(state.index, meta, PageFlags::DELETE, true);
+    let mut delete_bitmap_writer = VirtualPageWriter::new(state.index, PageFlags::DELETE, true);
     for _ in 0..(doc_cnt.div_ceil(8)) {
         delete_bitmap_writer.write(&[0u8]);
     }
     let delete_bitmap_blkno = delete_bitmap_writer.finalize();
 
     // term info
-    let mut term_stat_writer = PageWriter::new(state.index, meta, PageFlags::TERM_STATISTIC, true);
+    let mut term_stat_writer = PageWriter::new(state.index, PageFlags::TERM_STATISTIC, true);
     for count in state.builder.term_stat() {
         term_stat_writer.write(&count.to_le_bytes());
     }
     let term_stat_blkno = term_stat_writer.finalize();
 
-    let (payload_blkno, field_norm_blkno, sealed_data) = state.builder.serialize(state.index, meta);
+    let (payload_blkno, field_norm_blkno, sealed_data) = state.builder.serialize(state.index);
 
     meta.field_norm_blkno = field_norm_blkno;
     meta.payload_blkno = payload_blkno;

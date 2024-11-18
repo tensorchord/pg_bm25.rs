@@ -2,8 +2,6 @@
 /// doc_id -> ctid mapping
 use crate::page::{PageFlags, VirtualPageReader, VirtualPageWriter};
 
-use super::meta::MetaPageData;
-
 pub struct PayloadWriter {
     pub buffer: Vec<u64>,
 }
@@ -17,13 +15,9 @@ impl PayloadWriter {
         self.buffer.push(id);
     }
 
-    pub fn serialize(
-        &self,
-        index: pgrx::pg_sys::Relation,
-        meta: &mut MetaPageData,
-    ) -> pgrx::pg_sys::BlockNumber {
+    pub fn serialize(&self, index: pgrx::pg_sys::Relation) -> pgrx::pg_sys::BlockNumber {
         let data = bytemuck::cast_slice(&self.buffer);
-        let mut pager = VirtualPageWriter::new(index, meta, PageFlags::PAYLOAD, true);
+        let mut pager = VirtualPageWriter::new(index, PageFlags::PAYLOAD, true);
         pager.write(data);
         pager.finalize()
     }

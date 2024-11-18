@@ -117,16 +117,14 @@ impl PageReadGuard {
                 GenericXLogRegisterBuffer, GenericXLogStart, LockBuffer, BUFFER_LOCK_EXCLUSIVE,
                 BUFFER_LOCK_UNLOCK, GENERIC_XLOG_FULL_IMAGE,
             };
-            LockBuffer(self.buf, BUFFER_LOCK_UNLOCK as _);
-            LockBuffer(self.buf, BUFFER_LOCK_EXCLUSIVE as _);
+            let buf = self.buf;
+            std::mem::forget(self);
+            LockBuffer(buf, BUFFER_LOCK_UNLOCK as _);
+            LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE as _);
             let state = GenericXLogStart(relation);
-            let page = GenericXLogRegisterBuffer(state, self.buf, GENERIC_XLOG_FULL_IMAGE as _);
+            let page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE as _);
             let page = NonNull::new(page.cast()).expect("failed to get page");
-            PageWriteGuard {
-                buf: self.buf,
-                page,
-                state,
-            }
+            PageWriteGuard { buf, page, state }
         }
     }
 }
@@ -179,6 +177,21 @@ pub struct PageWriteGuard {
 impl PageWriteGuard {
     pub fn blkno(&self) -> pgrx::pg_sys::BlockNumber {
         unsafe { pgrx::pg_sys::BufferGetBlockNumber(self.buf) }
+    }
+
+    // not guaranteed to be atomic
+    pub fn degrade(self) -> PageReadGuard {
+        unsafe {
+            use pgrx::pg_sys::{BufferGetPage, LockBuffer, BUFFER_LOCK_SHARE, BUFFER_LOCK_UNLOCK};
+            let buf = self.buf;
+            let state = self.state;
+            std::mem::forget(self);
+            pgrx::pg_sys::GenericXLogFinish(state);
+            LockBuffer(buf, BUFFER_LOCK_UNLOCK as _);
+            LockBuffer(buf, BUFFER_LOCK_SHARE as _);
+            let page = NonNull::new(BufferGetPage(buf).cast()).expect("failed to get page");
+            PageReadGuard { buf, page }
+        }
     }
 }
 
@@ -367,6 +380,28 @@ pub fn page_alloc_init_forknum(
             page: page.cast(),
             state,
         }
+    }
+}
+
+pub fn page_alloc_with_fsm(
+    index: pgrx::pg_sys::Relation,
+    flag: PageFlags,
+    skip_lock_rel: bool,
+) -> PageWriteGuard {
+    let blkno = unsafe { pgrx::pg_sys::GetFreeIndexPage(index) };
+
+    if blkno == pgrx::pg_sys::InvalidBlockNumber {
+        page_alloc(index, flag, skip_lock_rel)
+    } else {
+        let mut page = page_write(index, blkno);
+        PageData::init_mut(&mut page, flag);
+        page
+    }
+}
+
+pub fn page_free(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) {
+    unsafe {
+        pgrx::pg_sys::RecordFreeIndexPage(index, blkno);
     }
 }
 

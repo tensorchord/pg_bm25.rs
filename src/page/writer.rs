@@ -1,11 +1,8 @@
 use std::ops::DerefMut;
 
-use crate::{
-    page::{bm25_page_size, page_alloc_init_forknum},
-    segment::{meta::MetaPageData, page_alloc_from_free_list},
+use super::{
+    bm25_page_size, page_alloc_init_forknum, page_alloc_with_fsm, PageFlags, PageWriteGuard,
 };
-
-use super::{PageFlags, PageWriteGuard};
 
 pub struct PageWriterInitFork {
     relation: pgrx::pg_sys::Relation,
@@ -70,25 +67,18 @@ impl PageWriterInitFork {
     }
 }
 
-pub struct PageWriter<'a> {
+pub struct PageWriter {
     relation: pgrx::pg_sys::Relation,
-    meta: &'a mut MetaPageData,
     flag: PageFlags,
     skip_lock_rel: bool,
     first_blkno: pgrx::pg_sys::BlockNumber,
     page: Option<PageWriteGuard>,
 }
 
-impl<'a> PageWriter<'a> {
-    pub fn new(
-        relation: pgrx::pg_sys::Relation,
-        meta: &'a mut MetaPageData,
-        flag: PageFlags,
-        skip_lock_rel: bool,
-    ) -> Self {
+impl PageWriter {
+    pub fn new(relation: pgrx::pg_sys::Relation, flag: PageFlags, skip_lock_rel: bool) -> Self {
         Self {
             relation,
-            meta,
             flag,
             skip_lock_rel,
             first_blkno: pgrx::pg_sys::InvalidBlockNumber,
@@ -97,15 +87,14 @@ impl<'a> PageWriter<'a> {
     }
 }
 
-impl<'a> PageWriter<'a> {
+impl PageWriter {
     pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
         self.first_blkno
     }
 
     fn change_page(&mut self) {
         let mut old_page = self.page.take().unwrap();
-        let new_page =
-            page_alloc_from_free_list(self.relation, self.meta, self.flag, self.skip_lock_rel);
+        let new_page = page_alloc_with_fsm(self.relation, self.flag, self.skip_lock_rel);
         assert!(
             old_page.blkno() + 1 == new_page.blkno(),
             "old: {}, new: {}",
@@ -123,8 +112,7 @@ impl<'a> PageWriter<'a> {
 
     fn freespace_mut(&mut self) -> &mut [u8] {
         if self.page.is_none() {
-            let page =
-                page_alloc_from_free_list(self.relation, self.meta, self.flag, self.skip_lock_rel);
+            let page = page_alloc_with_fsm(self.relation, self.flag, self.skip_lock_rel);
             self.first_blkno = page.blkno();
             self.page = Some(page);
         }

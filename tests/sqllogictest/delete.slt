@@ -52,6 +52,9 @@ statement ok
 UPDATE documents SET embedding = tokenize(passage) WHERE embedding IS NULL;
 
 statement ok
+VACUUM documents;
+
+statement ok
 SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
 FROM documents
 ORDER BY rank

@@ -1,7 +1,5 @@
 use crate::page::{PageFlags, VirtualPageReader, VirtualPageWriter};
 
-use super::meta::MetaPageData;
-
 pub struct FieldNormWriter {
     buffer: Vec<u8>,
 }
@@ -15,12 +13,8 @@ impl FieldNormWriter {
         self.buffer.push(fieldnorm_to_id(fieldnorm));
     }
 
-    pub fn serialize(
-        &self,
-        index: pgrx::pg_sys::Relation,
-        meta: &mut MetaPageData,
-    ) -> pgrx::pg_sys::BlockNumber {
-        let mut pager = VirtualPageWriter::new(index, meta, PageFlags::FIELD_NORM, true);
+    pub fn serialize(&self, index: pgrx::pg_sys::Relation) -> pgrx::pg_sys::BlockNumber {
+        let mut pager = VirtualPageWriter::new(index, PageFlags::FIELD_NORM, true);
         pager.write(&self.buffer);
         pager.finalize()
     }

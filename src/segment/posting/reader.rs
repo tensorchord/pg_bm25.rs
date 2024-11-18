@@ -31,7 +31,7 @@ impl PostingTermInfoReader {
     }
 }
 
-pub struct PostingReader {
+pub struct PostingReader<const WITH_FREQ: bool> {
     index: pgrx::pg_sys::Relation,
     skip_blocks: Box<[SkipBlock]>,
     doc_count: u32,
@@ -49,7 +49,7 @@ pub struct PostingReader {
     block_decoded: bool,
 }
 
-impl Debug for PostingReader {
+impl<const WITH_FREQ: bool> Debug for PostingReader<WITH_FREQ> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostingReader")
             .field("doc_count", &self.doc_count)
@@ -66,7 +66,7 @@ impl Debug for PostingReader {
 // This api is used in 2 ways:
 // - advance_block + advance_cur to move forward, manually call decode_block
 // - shallow_seek + seek to move to a specific doc_id, advance to move forward. it will decode_block automatically
-impl PostingReader {
+impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
     pub fn new(index: pgrx::pg_sys::Relation, term_info: PostingTermInfo) -> Self {
         assert!(term_info.postings_blkno != pgrx::pg_sys::InvalidBlockNumber);
         let reader = VirtualPageReader::new(index, term_info.postings_blkno);
@@ -193,6 +193,9 @@ impl PostingReader {
     pub fn term_freq(&self) -> u32 {
         debug_assert!(!self.completed());
         debug_assert!(self.block_decoded);
+        const {
+            assert!(WITH_FREQ);
+        }
         self.freq_decoder.output()[self.block_offset]
     }
 
@@ -239,28 +242,32 @@ impl PostingReader {
                 last_doc,
                 self.remain_doc_cnt,
             );
-            self.freq_decoder.decompress_vint_unsorted(
-                &page.data()[(self.page_offset + bytes)..],
-                self.remain_doc_cnt,
-            );
-            self.freq_decoder
-                .output_mut()
-                .iter_mut()
-                .for_each(|v| *v += 1);
+            if WITH_FREQ {
+                self.freq_decoder.decompress_vint_unsorted(
+                    &page.data()[(self.page_offset + bytes)..],
+                    self.remain_doc_cnt,
+                );
+                self.freq_decoder
+                    .output_mut()
+                    .iter_mut()
+                    .for_each(|v| *v += 1);
+            }
         } else {
             let bytes = self.doc_decoder.decompress_block_sorted(
                 &page.data()[self.page_offset..],
                 skip.docid_bits,
                 last_doc,
             );
-            self.freq_decoder.decompress_block_unsorted(
-                &page.data()[(self.page_offset + bytes)..],
-                skip.tf_bits,
-            );
-            self.freq_decoder
-                .output_mut()
-                .iter_mut()
-                .for_each(|v| *v += 1);
+            if WITH_FREQ {
+                self.freq_decoder.decompress_block_unsorted(
+                    &page.data()[(self.page_offset + bytes)..],
+                    skip.tf_bits,
+                );
+                self.freq_decoder
+                    .output_mut()
+                    .iter_mut()
+                    .for_each(|v| *v += 1);
+            }
         }
         self.block_offset = 0;
         self.block_decoded = true;
