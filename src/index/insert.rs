@@ -40,7 +40,6 @@ pub unsafe extern "C" fn aminsert(
     let doc_len = vector_borrow.doc_len();
 
     let mut metapage = page_write(index, METAPAGE_BLKNO);
-    
 
     let meta: &mut MetaPageData = metapage.as_mut();
     let current_doc_id = meta.current_doc_id;
