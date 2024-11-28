@@ -61,4 +61,13 @@ ORDER BY rank
 LIMIT 10;
 
 statement ok
+SET enable_seqscan=off;
+
+statement ok
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+FROM documents
+ORDER BY rank
+LIMIT 10;
+
+statement ok
 DROP TABLE documents;

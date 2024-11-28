@@ -190,6 +190,23 @@ impl VirtualPageWriter {
         }
     }
 
+    pub fn page_count(&self) -> usize {
+        match &self.state {
+            VirtualPageWriterState::Direct([_, direct]) => direct.data().len() / 4,
+            VirtualPageWriterState::Indirect1([_, indirect1_page, indirect1_inode]) => {
+                indirect1_page.data().len() / 4
+                    + (indirect1_inode.data().len() / 4 - 1) * DIRECT_COUNT
+            }
+            VirtualPageWriterState::Indirect2(
+                [_, indirect1_page, indirect2_page, indirect2_inode],
+            ) => {
+                indirect1_page.data().len() / 4
+                    + (indirect2_page.data().len() / 4 - 1) * DIRECT_COUNT
+                    + (indirect2_inode.data().len() / 4 - 1) * INDIRECT1_COUNT
+            }
+        }
+    }
+
     pub fn finalize(self) -> u32 {
         self.first_blkno
     }
@@ -210,15 +227,23 @@ impl VirtualPageWriter {
     }
 
     // it will make sure the data is on the same page
-    pub fn write_no_cross(&mut self, data: &[u8]) {
-        assert!(data.len() <= bm25_page_size());
+    pub fn write_vectorized_no_cross(&mut self, data: &[&[u8]]) -> bool {
+        let mut change_page = false;
+        let len = data.iter().map(|d| d.len()).sum::<usize>();
+        assert!(len <= bm25_page_size());
         let mut space = self.freespace_mut();
-        if space.len() < data.len() {
+        if space.len() < len {
+            change_page = true;
             self.new_page();
             space = self.freespace_mut();
         }
-        space[..data.len()].copy_from_slice(data);
-        *self.offset() += data.len() as u16;
+        let mut offset = 0;
+        for d in data {
+            space[offset..][..d.len()].copy_from_slice(d);
+            offset += d.len();
+        }
+        *self.offset() += len as u16;
+        change_page
     }
 
     fn offset(&mut self) -> &mut u16 {
@@ -350,7 +375,7 @@ impl VirtualPageWriter {
         }
     }
 
-    fn data_page(&mut self) -> &mut PageWriteGuard {
+    pub fn data_page(&mut self) -> &mut PageWriteGuard {
         match &mut self.state {
             VirtualPageWriterState::Direct(pages) => &mut pages[0],
             VirtualPageWriterState::Indirect1(pages) => &mut pages[0],

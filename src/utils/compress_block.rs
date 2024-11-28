@@ -128,13 +128,11 @@ impl BlockDecoder {
         block.as_ptr() as usize - start.as_ptr() as usize
     }
 
-    #[inline]
     pub fn output(&self) -> &[u32] {
         &self.output[..self.len]
     }
 
-    #[inline]
-    pub(crate) fn output_mut(&mut self) -> &mut [u32] {
+    pub fn output_mut(&mut self) -> &mut [u32] {
         &mut self.output[..self.len]
     }
 }

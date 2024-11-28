@@ -19,10 +19,12 @@ bitflags::bitflags! {
         const META = 1 << 0;
         const PAYLOAD = 1 << 1;
         const FIELD_NORM = 1 << 2;
-        const POSTINGS = 1 << 3;
-        const TERM_STATISTIC = 1 << 4;
-        const GROWING = 1 << 5;
-        const DELETE = 1 << 6;
+        const TERM_STATISTIC = 1 << 3;
+        const TERM_INFO = 1 << 4;
+        const SKIP_INFO = 1 << 5;
+        const BLOCK_DATA = 1 << 6;
+        const GROWING = 1 << 7;
+        const DELETE = 1 << 8;
         const FREE = 1 << 15;
     }
 }

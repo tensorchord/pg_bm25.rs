@@ -26,7 +26,6 @@ bytemuck = "1.18"
 lazy_static = "1.5"
 pgrx = { version = "=0.12.8", default-features = false, features = ["cshim"] }
 regex = "1.11.1"
-serde = { version = "1.0", features = ["derive"] }
 stop-words = "0.8.0"
 tantivy-stemmers = { version = "0.4.0", features = [
     "default",
@@ -41,7 +40,12 @@ rand = "0.8"
 [profile.release]
 lto = "fat"
 codegen-units = 1
-debug = true
+
+[profile.dev-opt]
+inherits = "dev"
+opt-level = 3
+lto = "thin"
+codegen-units = 8
 
 [lints.clippy]
 missing_safety_doc = "allow"
