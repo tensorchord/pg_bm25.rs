@@ -3,7 +3,7 @@ use crate::datatype::Bm25VectorBorrowed;
 use super::{
     field_norm::FieldNormWriter,
     payload::PayloadWriter,
-    posting::{InvertedSerializer, PostingsWriter, TERMINATED_DOC},
+    posting::{InvertedSerializer, InvertedWriter, TERMINATED_DOC},
     sealed::SealedSegmentData,
 };
 
@@ -11,7 +11,7 @@ use super::{
 pub struct IndexBuilder {
     doc_cnt: u32,
     doc_term_cnt: u64,
-    postings_writer: PostingsWriter,
+    postings_writer: InvertedWriter,
     field_norm_writer: FieldNormWriter,
     payload_writer: PayloadWriter,
 }
@@ -21,7 +21,7 @@ impl IndexBuilder {
         Self {
             doc_cnt: 0,
             doc_term_cnt: 0,
-            postings_writer: PostingsWriter::new(),
+            postings_writer: InvertedWriter::new(),
             field_norm_writer: FieldNormWriter::new(),
             payload_writer: PayloadWriter::new(),
         }

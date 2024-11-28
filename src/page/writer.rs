@@ -1,8 +1,6 @@
 use std::ops::DerefMut;
 
-use super::{
-    bm25_page_size, page_alloc_init_forknum, page_alloc_with_fsm, PageFlags, PageWriteGuard,
-};
+use super::{page_alloc_init_forknum, page_alloc_with_fsm, page_write, PageFlags, PageWriteGuard};
 
 pub struct PageWriterInitFork {
     relation: pgrx::pg_sys::Relation,
@@ -85,11 +83,30 @@ impl PageWriter {
             page: None,
         }
     }
+
+    pub fn open(
+        relation: pgrx::pg_sys::Relation,
+        last_blkno: pgrx::pg_sys::BlockNumber,
+        skip_lock_rel: bool,
+    ) -> Self {
+        let page = page_write(relation, last_blkno);
+        Self {
+            relation,
+            flag: page.opaque.page_flag,
+            skip_lock_rel,
+            first_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            page: Some(page),
+        }
+    }
 }
 
 impl PageWriter {
     pub fn finalize(self) -> pgrx::pg_sys::BlockNumber {
         self.first_blkno
+    }
+
+    pub fn blkno(&self) -> pgrx::pg_sys::BlockNumber {
+        self.page.as_ref().unwrap().blkno()
     }
 
     fn change_page(&mut self) {
@@ -130,22 +147,6 @@ impl PageWriter {
                 self.change_page();
             }
             data = &data[len..];
-        }
-    }
-
-    // it will make sure the data is on the same page
-    pub fn write_no_cross(&mut self, data: &[u8]) {
-        assert!(data.len() <= bm25_page_size());
-        let mut space = self.freespace_mut();
-        if space.len() < data.len() {
-            self.change_page();
-            space = self.freespace_mut();
-        }
-        space[..data.len()].copy_from_slice(data);
-        let space_len = space.len();
-        *self.offset() += data.len() as u16;
-        if data.len() == space_len {
-            self.change_page();
         }
     }
 }

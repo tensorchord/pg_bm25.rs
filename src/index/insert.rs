@@ -2,24 +2,17 @@ use pgrx::{itemptr::item_pointer_to_u64, FromDatum};
 
 use crate::{
     datatype::Bm25VectorInput,
-    guc::SEGMENT_GROWING_MAX_PAGE_SIZE,
     page::{page_free, page_read, page_write, VirtualPageWriter, METAPAGE_BLKNO},
     segment::{
         delete::extend_delete_bit,
-        field_norm::fieldnorm_to_id,
-        meta::{metapage_append_sealed_segment, MetaPageData},
+        field_norm::{fieldnorm_to_id, FieldNormReader},
+        growing::{GrowingSegmentData, GrowingSegmentReader},
+        meta::MetaPageData,
+        posting::{InvertedAppender, InvertedWriter},
         term_stat::TermStatReader,
     },
 };
 
-/// Insert Progress:
-/// 1. lock metapage
-/// 2. update doc_cnt, doc_term_cnt
-/// 3. insert into growing segment
-///   - if no growing segment, create one
-///   - if growing segment is full, seal it
-///   - otherwise, append to the last page
-/// 4. write payload, field_norm, term_stat
 #[allow(clippy::too_many_arguments)]
 #[pgrx::pg_guard]
 pub unsafe extern "C" fn aminsert(
@@ -47,7 +40,7 @@ pub unsafe extern "C" fn aminsert(
     meta.doc_cnt += 1;
     meta.doc_term_cnt += doc_len as u64;
 
-    let need_sealed = crate::segment::growing::growing_segment_insert(index, meta, &vector);
+    let growing_results = crate::segment::growing::growing_segment_insert(index, meta, &vector);
 
     let payload_blkno = meta.payload_blkno;
     let field_norm_blkno = meta.field_norm_blkno;
@@ -76,33 +69,63 @@ pub unsafe extern "C" fn aminsert(
 
     extend_delete_bit(index, delete_bitmap_blkno, current_doc_id);
 
-    if need_sealed {
-        let metapage = metapage.degrade();
-        let (sealed_data, sealed_doc_id) =
-            crate::segment::growing::build_sealed_segment(index, metapage.as_ref());
+    let prev_growing_segment = *meta.growing_segment.as_ref().unwrap();
+    let sealed_doc_id = meta.sealed_doc_id;
+    drop(metapage);
 
-        let max_growing_segment_page_size = SEGMENT_GROWING_MAX_PAGE_SIZE.get() as u32;
-        let mut metapage = metapage.upgrade(index);
-        let meta: &mut MetaPageData = metapage.as_mut();
+    if let Some(block_count) = growing_results {
+        let growing_reader = GrowingSegmentReader::new(index, &prev_growing_segment);
+        let mut doc_id = sealed_doc_id;
 
-        let growing_segment = meta.growing_segment.as_mut().unwrap();
-        let mut current_free_blkno = growing_segment.first_blkno;
-        let mut free_page_count = 0;
-        while free_page_count < max_growing_segment_page_size {
-            assert!(current_free_blkno != pgrx::pg_sys::InvalidBlockNumber);
-            let page = page_read(index, current_free_blkno);
-            let next_blkno = page.opaque.next_blkno;
-            page_free(index, current_free_blkno);
-            free_page_count += 1;
-            current_free_blkno = next_blkno;
+        // check if any other process is sealing the segment
+        if !pgrx::pg_sys::ConditionalLockPage(
+            index,
+            METAPAGE_BLKNO,
+            pgrx::pg_sys::ExclusiveLock as _,
+        ) {
+            return false;
         }
-        assert!(current_free_blkno != pgrx::pg_sys::InvalidBlockNumber);
 
-        meta.sealed_doc_id = sealed_doc_id;
-        growing_segment.first_blkno = current_free_blkno;
-        growing_segment.growing_full_page_count -= free_page_count;
-        metapage_append_sealed_segment(&mut metapage, sealed_data);
+        let mut writer = InvertedWriter::new();
+        let mut iter = growing_reader.into_iter(block_count);
+        while let Some(vector) = iter.next() {
+            writer.insert(doc_id, vector);
+            doc_id += 1;
+        }
+        writer.finalize();
+
+        let mut metapage = page_write(index, METAPAGE_BLKNO);
+        let meta: &mut MetaPageData = metapage.as_mut();
+        let fieldnorm_reader = FieldNormReader::new(index, field_norm_blkno);
+        let mut appender = InvertedAppender::new(
+            index,
+            meta.doc_cnt,
+            meta.avgdl(),
+            fieldnorm_reader,
+            meta.sealed_segment.term_info_blkno,
+        );
+        writer.serialize(&mut appender);
+
+        meta.sealed_doc_id = doc_id;
+        let growing_segment = meta.growing_segment.as_mut().unwrap();
+        growing_segment.first_blkno = prev_growing_segment.last_blkno.try_into().unwrap();
+        growing_segment.growing_full_page_count -= block_count;
+        drop(metapage);
+
+        pgrx::pg_sys::UnlockPage(index, METAPAGE_BLKNO, pgrx::pg_sys::ExclusiveLock as _);
+
+        free_growing_segment(index, prev_growing_segment);
     }
 
     false
+}
+
+fn free_growing_segment(index: pgrx::pg_sys::Relation, segment: GrowingSegmentData) {
+    let mut blkno = segment.first_blkno.get();
+    for _ in 0..segment.growing_full_page_count {
+        assert!(blkno != pgrx::pg_sys::InvalidBlockNumber);
+        let next_blkno = page_read(index, blkno).opaque.next_blkno;
+        page_free(index, blkno);
+        blkno = next_blkno;
+    }
 }

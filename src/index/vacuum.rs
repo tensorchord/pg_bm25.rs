@@ -103,26 +103,24 @@ pub unsafe extern "C" fn amvacuumcleanup(
         }
     }
 
-    for &sealed_data in meta.sealed_segment() {
-        let sealed_reader = SealedSegmentReader::new(index, sealed_data);
-        for i in 0..vocab_len() {
-            let Some(mut posting) = sealed_reader.get_postings_docid_only(i) else {
-                continue;
-            };
+    let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
+    for i in 0..vocab_len() {
+        let Some(mut posting) = sealed_reader.get_postings_docid_only(i) else {
+            continue;
+        };
+        loop {
+            posting.decode_block();
             loop {
-                posting.decode_block();
-                loop {
-                    let doc_id = posting.doc_id();
-                    if !delete_bitmap_reader.is_delete(doc_id) {
-                        term_stats[i as usize] += 1;
-                    }
-                    if !posting.advance_cur() {
-                        break;
-                    }
+                let doc_id = posting.doc_id();
+                if !delete_bitmap_reader.is_delete(doc_id) {
+                    term_stats[i as usize] += 1;
                 }
-                if !posting.advance_block() {
+                if !posting.advance_cur() {
                     break;
                 }
+            }
+            if !posting.advance_block() {
+                break;
             }
         }
     }

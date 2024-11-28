@@ -101,7 +101,7 @@ mod tests {
             }
         }
 
-        let topk = topk.to_sorted_slice().to_vec();
+        let topk = topk.to_sorted_slice();
         let mut reference = reference.into_sorted_vec();
         reference.reverse();
         println!(

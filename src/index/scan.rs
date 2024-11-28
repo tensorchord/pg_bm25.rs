@@ -152,40 +152,36 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
         })
         .collect::<Vec<_>>();
 
-    let mut sealed_sgement = meta.sealed_segment().to_vec();
-    sealed_sgement.reverse();
-    for sealed_data in sealed_sgement {
-        let sealed_reader = SealedSegmentReader::new(index, sealed_data);
-        let term_ids = query_vector.indexes();
-        let mut scorers = Vec::new();
+    let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
+    let term_ids = query_vector.indexes();
+    let mut scorers = Vec::new();
 
-        for i in 0..term_ids.len() {
-            let term_id = term_ids[i];
-            if let Some(posting_reader) = sealed_reader.get_postings(term_id) {
-                let weight = bm25_weight[i];
-                scorers.push(SealedScorer {
-                    posting: posting_reader,
-                    weight,
-                    max_score: weight.max_score(),
-                });
-            }
+    for i in 0..term_ids.len() {
+        let term_id = term_ids[i];
+        if let Some(posting_reader) = sealed_reader.get_postings(term_id) {
+            let weight = bm25_weight[i];
+            scorers.push(SealedScorer {
+                posting: posting_reader,
+                weight,
+                max_score: weight.max_score(),
+            });
         }
+    }
 
-        if scorers.len() == 1 {
-            block_wand_single(
-                scorers.into_iter().next().unwrap(),
-                &fieldnorm_reader,
-                &delete_bitmap_reader,
-                &mut computer,
-            );
-        } else {
-            block_wand(
-                scorers,
-                &fieldnorm_reader,
-                &delete_bitmap_reader,
-                &mut computer,
-            );
-        }
+    if scorers.len() == 1 {
+        block_wand_single(
+            scorers.into_iter().next().unwrap(),
+            &fieldnorm_reader,
+            &delete_bitmap_reader,
+            &mut computer,
+        );
+    } else {
+        block_wand(
+            scorers,
+            &fieldnorm_reader,
+            &delete_bitmap_reader,
+            &mut computer,
+        );
     }
 
     let payload_reader = PayloadReader::new(index, meta.payload_blkno);

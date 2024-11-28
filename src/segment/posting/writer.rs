@@ -1,14 +1,12 @@
-use super::InvertedSerializer;
-use crate::{
-    datatype::Bm25VectorBorrowed, segment::field_norm::FieldNormRead, token::vocab_len, utils::vint,
-};
+use super::InvertedSerialize;
+use crate::{datatype::Bm25VectorBorrowed, token::vocab_len, utils::vint};
 
-// postings in ram
-pub struct PostingsWriter {
+// inverted lists in memory
+pub struct InvertedWriter {
     term_index: Vec<TFRecorder>,
 }
 
-impl PostingsWriter {
+impl InvertedWriter {
     pub fn new() -> Self {
         Self {
             term_index: (0..vocab_len()).map(|_| TFRecorder::new()).collect(),
@@ -32,7 +30,7 @@ impl PostingsWriter {
         }
     }
 
-    pub fn serialize<R: FieldNormRead>(&self, s: &mut InvertedSerializer<R>) {
+    pub fn serialize<I: InvertedSerialize>(&self, s: &mut I) {
         for recorder in &self.term_index {
             s.new_term(recorder.total_docs);
             for (doc_id, tf) in recorder.iter() {

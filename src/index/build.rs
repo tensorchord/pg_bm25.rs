@@ -1,5 +1,3 @@
-use std::ops::DerefMut;
-
 use pgrx::{itemptr::item_pointer_to_u64, FromDatum, PgMemoryContexts};
 
 use crate::{
@@ -10,7 +8,8 @@ use crate::{
     },
     segment::{
         builder::IndexBuilder,
-        meta::{metapage_append_sealed_segment, MetaPageData, META_VERSION},
+        meta::{MetaPageData, META_VERSION},
+        sealed::SealedSegmentData,
     },
     token::vocab_len,
 };
@@ -42,8 +41,9 @@ pub unsafe extern "C" fn ambuildempty(index: pgrx::pg_sys::Relation) {
             current_doc_id: 0,
             sealed_doc_id: 0,
             growing_segment: None,
-            sealed_length: 0,
-            sealed_segment: [],
+            sealed_segment: SealedSegmentData {
+                term_info_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            },
         });
         meta_page.header.pd_lower += std::mem::size_of::<MetaPageData>() as u16;
     }
@@ -128,8 +128,9 @@ unsafe fn write_down(state: &BuildState) {
             current_doc_id: doc_cnt,
             sealed_doc_id: doc_cnt,
             growing_segment: None,
-            sealed_length: 0,
-            sealed_segment: [],
+            sealed_segment: SealedSegmentData {
+                term_info_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            },
         });
         meta_page.header.pd_lower += std::mem::size_of::<MetaPageData>() as u16;
     }
@@ -155,5 +156,5 @@ unsafe fn write_down(state: &BuildState) {
     meta.payload_blkno = payload_blkno;
     meta.term_stat_blkno = term_stat_blkno;
     meta.delete_bitmap_blkno = delete_bitmap_blkno;
-    metapage_append_sealed_segment(meta_page.deref_mut(), sealed_data);
+    meta.sealed_segment = sealed_data;
 }

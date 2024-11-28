@@ -1,8 +1,10 @@
+use std::num::NonZero;
+
 use crate::{
     datatype::{Bm25VectorBorrowed, Bm25VectorHeader, Bm25VectorInput},
     guc::SEGMENT_GROWING_MAX_PAGE_SIZE,
     page::{
-        page_alloc_with_fsm, page_append_item, page_free, page_get_item, page_get_item_id,
+        page_alloc_with_fsm, page_append_item, page_get_item, page_get_item_id,
         page_get_max_offset_number, page_read, page_write, PageFlags, PageReadGuard,
     },
     segment::sealed::SealedSegmentWriter,
@@ -16,7 +18,7 @@ use super::{
 /// store bm25vector
 #[derive(Debug, Clone, Copy)]
 pub struct GrowingSegmentData {
-    pub first_blkno: pgrx::pg_sys::BlockNumber,
+    pub first_blkno: NonZero<u32>,
     pub last_blkno: pgrx::pg_sys::BlockNumber,
     pub growing_full_page_count: u32,
 }
@@ -40,7 +42,7 @@ impl GrowingSegmentReader {
     pub fn new(index: pgrx::pg_sys::Relation, data: &GrowingSegmentData) -> Self {
         Self {
             index,
-            blkno: data.first_blkno,
+            blkno: data.first_blkno.get(),
         }
     }
 
@@ -96,31 +98,29 @@ impl GrowingSegmentIterator {
     }
 }
 
-pub fn free_growing_segment(index: pgrx::pg_sys::Relation, growing_segment: GrowingSegmentData) {
-    page_free(index, growing_segment.first_blkno);
-}
-
 /// - if no growing segment, create one
 /// - append to the last page
 /// - if growing segment is full, seal it
+///
+/// return (first_blkno, growing_full_page_count) if growing segment is full
 pub fn growing_segment_insert(
     index: pgrx::pg_sys::Relation,
     meta: &mut MetaPageData,
     bm25vector: &Bm25VectorInput,
-) -> bool {
+) -> Option<u32> {
     let mut buf: Vec<u8> = Vec::new();
     buf.extend_from_slice(bm25vector.to_bytes());
 
     let Some(growing_segment) = &mut meta.growing_segment else {
         let mut page = page_alloc_with_fsm(index, PageFlags::GROWING, false);
         meta.growing_segment = Some(GrowingSegmentData {
-            first_blkno: page.blkno(),
+            first_blkno: NonZero::new(page.blkno()).unwrap(),
             last_blkno: page.blkno(),
             growing_full_page_count: 0,
         });
         let success = page_append_item(&mut page, &buf);
         assert!(success);
-        return false;
+        return None;
     };
 
     let mut page = page_write(index, growing_segment.last_blkno);
@@ -132,10 +132,10 @@ pub fn growing_segment_insert(
         growing_segment.last_blkno = new_page.blkno();
         growing_segment.growing_full_page_count += 1;
         if growing_segment.growing_full_page_count >= SEGMENT_GROWING_MAX_PAGE_SIZE.get() as u32 {
-            return true;
+            return Some(growing_segment.growing_full_page_count);
         }
     }
-    false
+    None
 }
 
 // return (sealed_segment_data, current_sealed_doc_id)
