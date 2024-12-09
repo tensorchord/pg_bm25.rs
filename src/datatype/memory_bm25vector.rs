@@ -58,7 +58,7 @@ pub enum Bm25VectorInput<'a> {
     Borrowed(&'a Bm25VectorHeader),
 }
 
-impl<'a> Bm25VectorInput<'a> {
+impl Bm25VectorInput<'_> {
     unsafe fn new(p: NonNull<Bm25VectorHeader>) -> Self {
         let q = unsafe {
             NonNull::new(pgrx::pg_sys::pg_detoast_datum(p.cast().as_ptr()).cast()).unwrap()
@@ -129,7 +129,7 @@ impl Drop for Bm25VectorOutput {
     }
 }
 
-impl<'a> FromDatum for Bm25VectorInput<'a> {
+impl FromDatum for Bm25VectorInput<'_> {
     unsafe fn from_polymorphic_datum(datum: Datum, is_null: bool, _typoid: Oid) -> Option<Self> {
         if is_null {
             None

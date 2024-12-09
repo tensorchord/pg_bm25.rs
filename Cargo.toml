@@ -1,5 +1,5 @@
 [package]
-name = "pg_bm25"
+name = "vchord_bm25"
 version = "0.0.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "lib"]
 
 [[bin]]
-name = "pgrx_embed_pg_bm25"
+name = "pgrx_embed_vchord_bm25"
 path = "./src/bin/pgrx_embed.rs"
 
 [features]

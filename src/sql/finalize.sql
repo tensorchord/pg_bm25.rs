@@ -19,7 +19,7 @@ CREATE FUNCTION to_bm25query(index_oid regclass, query_str text) RETURNS bm25que
     $$;
 
 CREATE ACCESS METHOD bm25 TYPE INDEX HANDLER _bm25_amhandler;
-COMMENT ON ACCESS METHOD bm25 IS 'pg_bm25 index access method';
+COMMENT ON ACCESS METHOD bm25 IS 'vchord bm25 index access method';
 
 CREATE OPERATOR pg_catalog.<&> (
     PROCEDURE = search_bm25query,

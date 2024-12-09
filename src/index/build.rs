@@ -73,7 +73,7 @@ pub unsafe extern "C" fn ambuild(
         index_tuples: 0,
         index,
         builder: IndexBuilder::new(),
-        memctx: PgMemoryContexts::new("pg_bm25_index_build"),
+        memctx: PgMemoryContexts::new("vchord_bm25_index_build"),
     };
 
     pgrx::pg_sys::IndexBuildHeapScan(heap, index, index_info, Some(build_callback), &mut state);

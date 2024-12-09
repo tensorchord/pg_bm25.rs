@@ -46,7 +46,7 @@ LIMIT 10;
 
 statement ok
 INSERT INTO documents (passage) VALUES 
-('pg_bm25 is a postgresql extension for bm25 ranking algorithm.');
+('vchord_bm25 is a postgresql extension for bm25 ranking algorithm.');
 
 statement ok
 UPDATE documents SET embedding = tokenize(passage) WHERE embedding IS NULL;
