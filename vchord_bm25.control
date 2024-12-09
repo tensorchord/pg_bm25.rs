@@ -1,0 +1,6 @@
+comment = 'vchord_bm25: A postgresql extension for bm25 ranking algorithm'
+default_version = '@CARGO_VERSION@'
+module_pathname = '$libdir/vchord_bm25'
+relocatable = false
+superuser = true
+schema = bm25_catalog

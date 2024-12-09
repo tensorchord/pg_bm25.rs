@@ -30,7 +30,7 @@ pub trait FieldNormRead {
 
 pub struct FieldNormMemoryReader<'a>(&'a [u8]);
 
-impl<'a> FieldNormRead for FieldNormMemoryReader<'a> {
+impl FieldNormRead for FieldNormMemoryReader<'_> {
     fn read(&self, doc_id: u32) -> u8 {
         self.0[doc_id as usize]
     }

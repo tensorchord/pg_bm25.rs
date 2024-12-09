@@ -1,4 +1,4 @@
-## Tests for pg_bm25.rs
+## Tests for vchord_bm25
 
 We use [sqllogictest-rs](https://github.com/risinglightdb/sqllogictest-rs) to test the SQL queries.
 
