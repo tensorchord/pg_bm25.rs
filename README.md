@@ -1,6 +1,6 @@
 # VectorChord-BM25
 
-A postgresql extension for bm25 ranking algorithm. We implemented the Block-WeakAnd Algorithms for BM25 ranking inside PostgreSQL. This extension is currently in **alpha** stage and not recommended for production use. We're still iterating on the API and performance. The interface may change in the future.
+A PostgreSQL extension for bm25 ranking algorithm. We implemented the Block-WeakAnd Algorithms for BM25 ranking inside PostgreSQL. This extension is currently in **alpha** stage and not recommended for production use. We're still iterating on the API and performance. The interface may change in the future.
 
 ## Example
 
@@ -64,10 +64,9 @@ You can follow the docs about [`pgvecto.rs`](https://docs.pgvecto.rs/developers/
 cargo pgrx install --sudo --release
 ```
 
-3. Configure your PostgreSQL by modifying the `shared_preload_libraries` and `search_path` to include the extension.
+3. Configure your PostgreSQL by modifying `search_path` to include the extension.
 
 ```sh
-psql -U postgres -c 'ALTER SYSTEM SET shared_preload_libraries = "vchord_bm25.so"'
 psql -U postgres -c 'ALTER SYSTEM SET search_path TO "$user", public, bm25_catalog'
 # You need restart the PostgreSQL cluster to take effects.
 sudo systemctl restart postgresql.service   # for vchord_bm25.rs running with systemd
