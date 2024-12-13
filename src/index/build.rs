@@ -143,7 +143,7 @@ unsafe fn write_down(state: &BuildState) {
     }
     let delete_bitmap_blkno = delete_bitmap_writer.finalize();
 
-    // term info
+    // term stat
     let mut term_stat_writer = PageWriter::new(state.index, PageFlags::TERM_STATISTIC, true);
     for count in state.builder.term_stat() {
         term_stat_writer.write(&count.to_le_bytes());
