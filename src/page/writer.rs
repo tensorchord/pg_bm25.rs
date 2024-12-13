@@ -26,12 +26,6 @@ impl PageWriterInitFork {
     fn change_page(&mut self) {
         let mut old_page = self.page.take().unwrap();
         let new_page = page_alloc_init_forknum(self.relation, self.flag);
-        assert!(
-            old_page.blkno() + 1 == new_page.blkno(),
-            "old: {}, new: {}",
-            old_page.blkno(),
-            new_page.blkno()
-        );
         old_page.opaque.next_blkno = new_page.blkno();
         self.page = Some(new_page);
     }
@@ -112,12 +106,6 @@ impl PageWriter {
     fn change_page(&mut self) {
         let mut old_page = self.page.take().unwrap();
         let new_page = page_alloc_with_fsm(self.relation, self.flag, self.skip_lock_rel);
-        assert!(
-            old_page.blkno() + 1 == new_page.blkno(),
-            "old: {}, new: {}",
-            old_page.blkno(),
-            new_page.blkno()
-        );
         old_page.opaque.next_blkno = new_page.blkno();
         self.page = Some(new_page);
     }
