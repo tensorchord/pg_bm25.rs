@@ -1,4 +1,5 @@
 use crate::{
+    index::options::get_options,
     page::{bm25_page_size, page_read, page_write, METAPAGE_BLKNO},
     segment::{
         delete::DeleteBitmapReader,
@@ -103,23 +104,24 @@ pub unsafe extern "C" fn amvacuumcleanup(
         }
     }
 
+    let encode_option = get_options(index).encode;
     let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
     for i in 0..vocab_len() {
-        let Some(mut posting) = sealed_reader.get_postings_docid_only(i) else {
+        let Some(mut posting) = sealed_reader.get_postings(i, encode_option) else {
             continue;
         };
         loop {
             posting.decode_block();
             loop {
-                let doc_id = posting.doc_id();
+                let doc_id = posting.docid();
                 if !delete_bitmap_reader.is_delete(doc_id) {
                     term_stats[i as usize] += 1;
                 }
-                if !posting.advance_cur() {
+                if !posting.next_doc() {
                     break;
                 }
             }
-            if !posting.advance_block() {
+            if !posting.next_block() {
                 break;
             }
         }

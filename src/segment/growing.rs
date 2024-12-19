@@ -7,13 +7,9 @@ use crate::{
         page_alloc_with_fsm, page_append_item, page_get_item, page_get_item_id,
         page_get_max_offset_number, page_read, page_write, PageFlags, PageReadGuard,
     },
-    segment::sealed::SealedSegmentWriter,
 };
 
-use super::{
-    field_norm::FieldNormReader, meta::MetaPageData, posting::InvertedSerializer,
-    sealed::SealedSegmentData,
-};
+use super::meta::MetaPageData;
 
 /// store bm25vector
 #[derive(Debug, Clone, Copy)]
@@ -136,34 +132,4 @@ pub fn growing_segment_insert(
         }
     }
     None
-}
-
-// return (sealed_segment_data, current_sealed_doc_id)
-pub fn build_sealed_segment(
-    index: pgrx::pg_sys::Relation,
-    meta: &MetaPageData,
-) -> (SealedSegmentData, u32) {
-    let mut doc_id = meta.sealed_doc_id;
-    let growing_segment = meta.growing_segment.unwrap();
-    let mut sealed_writer = SealedSegmentWriter::new();
-    {
-        let growing_reader = GrowingSegmentReader::new(index, &growing_segment);
-        let mut iter = growing_reader.into_iter(SEGMENT_GROWING_MAX_PAGE_SIZE.get() as u32);
-        while let Some(vector) = iter.next() {
-            sealed_writer.insert(doc_id, vector);
-            doc_id += 1;
-        }
-        sealed_writer.finalize_insert();
-    }
-
-    let fieldnorm_reader = FieldNormReader::new(index, meta.field_norm_blkno);
-    let mut serializer =
-        InvertedSerializer::new(index, meta.doc_cnt, meta.avgdl(), fieldnorm_reader);
-    sealed_writer.serialize(&mut serializer);
-    let sealed_blkno = serializer.finalize();
-    let sealed_data = SealedSegmentData {
-        term_info_blkno: sealed_blkno,
-    };
-
-    (sealed_data, doc_id)
 }

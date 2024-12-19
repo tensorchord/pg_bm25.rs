@@ -23,9 +23,11 @@ bitpacking = { version = "0.9", default-features = false, features = [
     "bitpacker4x",
 ] }
 bytemuck = "1.18"
+enum_dispatch = "0.3.13"
 lazy_static = "1.5"
 pgrx = { version = "=0.12.8", default-features = false, features = ["cshim"] }
 regex = "1.11.1"
+serde = { version = "1.0.216", features = ["derive"] }
 stop-words = "0.8.0"
 tantivy-stemmers = { version = "0.4.0", features = [
     "default",
@@ -33,6 +35,8 @@ tantivy-stemmers = { version = "0.4.0", features = [
 ] }
 thiserror = "2"
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+toml = "0.8.19"
+validator = { version = "0.19.0", features = ["derive"] }
 
 [dev-dependencies]
 rand = "0.8"

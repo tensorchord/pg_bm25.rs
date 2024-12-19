@@ -1,4 +1,6 @@
-use crate::utils::cells::PgCell;
+use serde::Deserialize;
+
+use crate::{options::IndexingOption, utils::cells::PgCell};
 use std::ffi::CStr;
 
 static RELOPT_KIND_BM25: PgCell<pgrx::pg_sys::relopt_kind::Type> = unsafe { PgCell::new(0) };
@@ -58,4 +60,28 @@ pub fn init() {
             pgrx::pg_sys::AccessExclusiveLock as pgrx::pg_sys::LOCKMODE,
         );
     }
+}
+
+unsafe fn convert_reloptions_to_options(
+    reloptions: *const pgrx::pg_sys::varlena,
+) -> IndexingOption {
+    #[derive(Debug, Clone, Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    struct Parsed {
+        #[serde(flatten)]
+        option: IndexingOption,
+    }
+    let reloption = reloptions as *const Reloption;
+    if reloption.is_null() || unsafe { (*reloption).options == 0 } {
+        return Default::default();
+    }
+    let s = unsafe { (*reloption).options() }.to_string_lossy();
+    match toml::from_str::<Parsed>(&s) {
+        Ok(p) => p.option,
+        Err(e) => pgrx::error!("failed to parse options: {}", e),
+    }
+}
+
+pub unsafe fn get_options(index: pgrx::pg_sys::Relation) -> IndexingOption {
+    convert_reloptions_to_options((*index).rd_options)
 }
