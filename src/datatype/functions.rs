@@ -1,9 +1,14 @@
-use std::{collections::BTreeMap, num::NonZero};
+use std::{
+    collections::{BTreeMap, HashMap},
+    num::NonZero,
+};
+
+use pgrx::{pg_sys::panic::ErrorReportable, IntoDatum};
 
 use crate::{
     page::{page_read, METAPAGE_BLKNO},
-    segment::meta::MetaPageData,
-    segment::term_stat::TermStatReader,
+    segment::{meta::MetaPageData, term_stat::TermStatReader},
+    token::unicode_tokenize,
     weight::bm25_score_batch,
 };
 
@@ -65,4 +70,120 @@ pub fn search_bm25query(
     );
 
     scores * -1.0
+}
+
+#[pgrx::pg_extern()]
+pub fn incremental_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
+    let tokens = unicode_tokenize(text);
+    let args = Some(vec![(
+        pgrx::PgBuiltInOids::TEXTARRAYOID.oid(),
+        tokens.clone().into_datum(),
+    )]);
+
+    let mut token_ids = HashMap::new();
+    pgrx::Spi::connect(|mut client| {
+        client
+            .update(
+                &format!(
+                    r#"
+                    insert into bm25_catalog.{} (token)
+                    select unnest($1::text[])
+                    on conflict (token) do nothing;
+                    "#,
+                    token_table
+                ),
+                None,
+                args.clone(),
+            )
+            .expect("failed to insert tokens");
+        let table = client
+            .select(
+                &format!(
+                    "SELECT id, token FROM bm25_catalog.{} WHERE token = ANY($1);",
+                    token_table
+                ),
+                None,
+                args,
+            )
+            .unwrap_or_report();
+        for row in table {
+            let id: i32 = row
+                .get_by_name("id")
+                .expect("no id column")
+                .expect("no id value");
+            let token: String = row
+                .get_by_name("token")
+                .expect("no token column")
+                .expect("no token value");
+            token_ids.insert(token, id as u32);
+        }
+    });
+
+    let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+    for token in tokens.iter() {
+        *map.entry(*token_ids.get(token).expect("miss token"))
+            .or_insert(0) += 1;
+    }
+    let mut doc_len: u32 = 0;
+    let mut indexes = Vec::with_capacity(map.len());
+    let mut values = Vec::with_capacity(map.len());
+    for (index, value) in map {
+        indexes.push(index);
+        values.push(value);
+        doc_len = doc_len.checked_add(value).expect("overflow");
+    }
+    let vector = unsafe { Bm25VectorBorrowed::new_unchecked(doc_len, &indexes, &values) };
+    Bm25VectorOutput::new(vector)
+}
+
+#[pgrx::pg_extern(immutable, strict, parallel_safe)]
+pub fn query_tokenize(query: &str, token_table: &str) -> Bm25VectorOutput {
+    let tokens = unicode_tokenize(query);
+    let args = Some(vec![(
+        pgrx::PgBuiltInOids::TEXTARRAYOID.oid(),
+        tokens.clone().into_datum(),
+    )]);
+    let mut token_ids = HashMap::new();
+    pgrx::Spi::connect(|client| {
+        let table = client
+            .select(
+                &format!(
+                    "SELECT id, token FROM bm25_catalog.{} WHERE token = ANY($1);",
+                    token_table
+                ),
+                None,
+                args,
+            )
+            .unwrap_or_report();
+        for row in table {
+            let id: i32 = row
+                .get_by_name("id")
+                .expect("no id column")
+                .expect("no id value");
+            let token: String = row
+                .get_by_name("token")
+                .expect("no token column")
+                .expect("no token value");
+            token_ids.insert(token, id as u32);
+        }
+    });
+
+    let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+    for token in tokens.iter() {
+        let id = token_ids.get(token);
+        match id {
+            Some(id) => *map.entry(*id).or_insert(0) += 1,
+            None => continue,
+        }
+    }
+    let mut doc_len: u32 = 0;
+    let mut indexes = Vec::with_capacity(map.len());
+    let mut values = Vec::with_capacity(map.len());
+    for (index, value) in map {
+        indexes.push(index);
+        values.push(value);
+        doc_len = doc_len.checked_add(value).expect("overflow");
+    }
+    let vector = unsafe { Bm25VectorBorrowed::new_unchecked(doc_len, &indexes, &values) };
+    Bm25VectorOutput::new(vector)
 }
