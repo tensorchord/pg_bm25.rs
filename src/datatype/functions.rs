@@ -82,30 +82,46 @@ pub fn incremental_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
 
     let mut token_ids = HashMap::new();
     pgrx::Spi::connect(|mut client| {
-        client
-            .update(
-                &format!(
-                    r#"
-                    insert into bm25_catalog.{} (token)
-                    select unnest($1::text[])
-                    on conflict (token) do nothing;
-                    "#,
-                    token_table
-                ),
-                None,
-                args.clone(),
+        // client
+        //     .update(
+        //         &format!(
+        //             r#"
+        //             insert into bm25_catalog.{} (token)
+        //             select unnest($1::text[])
+        //             on conflict (token) do nothing;
+        //             "#,
+        //             token_table
+        //         ),
+        //         None,
+        //         args.clone(),
+        //     )
+        //     .expect("failed to insert tokens");
+        // let table = client
+        //     .select(
+        //         &format!(
+        //             "SELECT id, token FROM bm25_catalog.{} WHERE token = ANY($1);",
+        //             token_table
+        //         ),
+        //         None,
+        //         args,
+        //     )
+        //     .unwrap_or_report();
+        let query = format!(
+            r#"
+            WITH ins AS (
+                INSERT INTO bm25_catalog.{} (token)
+                SELECT unnest($1::text[])
+                ON CONFLICT (token) DO NOTHING
+                RETURNING id, token
             )
-            .expect("failed to insert tokens");
-        let table = client
-            .select(
-                &format!(
-                    "SELECT id, token FROM bm25_catalog.{} WHERE token = ANY($1);",
-                    token_table
-                ),
-                None,
-                args,
-            )
-            .unwrap_or_report();
+            SELECT id, token FROM ins
+            UNION ALL
+            SELECT id, token FROM bm25_catalog.{} WHERE token = ANY($1);
+            "#,
+            token_table,
+            token_table
+        );
+        let table = client.update(&query, None, args).unwrap_or_report();
         for row in table {
             let id: i32 = row
                 .get_by_name("id")
