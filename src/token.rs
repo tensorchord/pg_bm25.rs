@@ -50,7 +50,7 @@ pub fn vocab_len() -> u32 {
         "WORD" => WORD_TOKENIZER.vocab_len(),
         "TOCKEN" => TOCKENIZER.vocab_len(),
         "UNICODE" => {
-            pgrx::Spi::get_one::<i64>("select max(id) from bm25_catalog.test_token;").expect("failed to get count").expect("no count") as u32
+            pgrx::Spi::get_one::<i64>("select max(id) from bm25_catalog.test_token;").expect("failed to get count").expect("no count") as u32 + 1
         }
         _ => panic!("Unknown tokenizer"),
     }

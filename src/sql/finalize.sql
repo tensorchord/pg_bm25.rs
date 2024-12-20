@@ -57,5 +57,5 @@ $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION bm25_query_tokenize(index_oid regclass, query text, token_table text) RETURNS bm25query
     IMMUTABLE STRICT PARALLEL SAFE LANGUAGE sql AS $$
-        SELECT index_oid, query_tokenize(query_str, token_table);
+        SELECT index_oid, query_tokenize(query, token_table);
     $$;
