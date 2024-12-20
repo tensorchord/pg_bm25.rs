@@ -43,7 +43,7 @@ impl VirtualPageReader {
     pub fn get_block_id(&self, virtual_id: u32) -> u32 {
         let mut virtual_id = virtual_id as usize;
         if virtual_id < DIRECT_COUNT {
-            let slice = &self.direct_inode.content[virtual_id * 4..][..4];
+            let slice = &self.direct_inode.data()[virtual_id * 4..][..4];
             return u32::from_le_bytes(slice.try_into().unwrap());
         }
 
@@ -52,10 +52,10 @@ impl VirtualPageReader {
         if virtual_id < INDIRECT1_COUNT {
             let indirect1_id = virtual_id / DIRECT_COUNT;
             let indirect1_offset = virtual_id % DIRECT_COUNT;
-            let slice = &indirect1_inode.content[indirect1_id * 4..][..4];
+            let slice = &indirect1_inode.data()[indirect1_id * 4..][..4];
             let blkno = u32::from_le_bytes(slice.try_into().unwrap());
             let indirect = page_read(self.relation, blkno);
-            let slice = &indirect.content[indirect1_offset * 4..][..4];
+            let slice = &indirect.data()[indirect1_offset * 4..][..4];
             return u32::from_le_bytes(slice.try_into().unwrap());
         }
 
@@ -66,13 +66,13 @@ impl VirtualPageReader {
         let indirect2_offset = virtual_id % INDIRECT1_COUNT;
         let indirect1_id = indirect2_offset / DIRECT_COUNT;
         let indirect1_offset = indirect2_offset % DIRECT_COUNT;
-        let slice = &indirect2_inode.content[indirect2_id * 4..][..4];
+        let slice = &indirect2_inode.data()[indirect2_id * 4..][..4];
         let blkno = u32::from_le_bytes(slice.try_into().unwrap());
         let indirect1 = page_read(self.relation, blkno);
-        let slice = &indirect1.content[indirect1_id * 4..][..4];
+        let slice = &indirect1.data()[indirect1_id * 4..][..4];
         let blkno = u32::from_le_bytes(slice.try_into().unwrap());
         let indirect = page_read(self.relation, blkno);
-        let slice = &indirect.content[indirect1_offset * 4..][..4];
+        let slice = &indirect.data()[indirect1_offset * 4..][..4];
         u32::from_le_bytes(slice.try_into().unwrap())
     }
 }
@@ -277,7 +277,7 @@ impl VirtualPageWriter {
                 let mut indirect1_page =
                     page_alloc_with_fsm(self.relation, self.flag, self.skip_lock_rel);
                 indirect1_inode.freespace_mut()[..4]
-                    .copy_from_slice(&data_page.blkno().to_le_bytes());
+                    .copy_from_slice(&indirect1_page.blkno().to_le_bytes());
                 indirect1_inode.header.pd_lower += 4;
                 indirect1_page.freespace_mut()[..4]
                     .copy_from_slice(&data_page.blkno().to_le_bytes());
@@ -291,7 +291,7 @@ impl VirtualPageWriter {
                 let inode_space = indirect1_page.freespace_mut();
                 if inode_space.len() >= 4 {
                     inode_space[..4].copy_from_slice(&data_page.blkno().to_le_bytes());
-                    indirect1_inode.header.pd_lower += 4;
+                    indirect1_page.header.pd_lower += 4;
                     *old_data_page = data_page;
                     return;
                 }
