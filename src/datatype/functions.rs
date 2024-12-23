@@ -108,9 +108,16 @@ pub fn incremental_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
         //     .unwrap_or_report();
         let query = format!(
             r#"
-            WITH ins AS (
+            WITH new_tokens AS (SELECT unnest($1::text[]) AS token),
+            to_insert AS (
+                SELECT token FROM new_tokens
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM bm25_catalog.{} WHERE token = new_tokens.token
+                )
+            ),
+            ins AS (
                 INSERT INTO bm25_catalog.{} (token)
-                SELECT unnest($1::text[])
+                SELECT token FROM to_insert
                 ON CONFLICT (token) DO NOTHING
                 RETURNING id, token
             )
@@ -118,8 +125,7 @@ pub fn incremental_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
             UNION ALL
             SELECT id, token FROM bm25_catalog.{} WHERE token = ANY($1);
             "#,
-            token_table,
-            token_table
+            token_table, token_table, token_table
         );
         let table = client.update(&query, None, args).unwrap_or_report();
         for row in table {
