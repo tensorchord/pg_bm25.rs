@@ -1,6 +1,6 @@
 use super::{
     bm25_page_size, page_alloc_init_forknum, page_alloc_with_fsm, page_read, page_write, PageFlags,
-    PageReadGuard, PageWriteGuard,
+    PageWriteGuard,
 };
 
 const DIRECT_COUNT: usize = bm25_page_size() / 4;
@@ -9,14 +9,24 @@ const INDIRECT2_COUNT: usize = INDIRECT1_COUNT * DIRECT_COUNT;
 
 pub struct VirtualPageReader {
     relation: pgrx::pg_sys::Relation,
-    direct_inode: PageReadGuard,
+    direct_inode: Box<[u32]>,
+    indirect1_inode_blkno: u32,
 }
 
 impl VirtualPageReader {
     pub fn new(relation: pgrx::pg_sys::Relation, blkno: u32) -> Self {
+        assert!(blkno != pgrx::pg_sys::InvalidBlockNumber);
+        let direct_inode_page = page_read(relation, blkno);
+        let data = direct_inode_page.data();
+        let mut direct_inode: Vec<u32> = Vec::with_capacity(data.len() / 4);
+        direct_inode.extend_from_slice(bytemuck::cast_slice(data));
+        let direct_inode = direct_inode.into_boxed_slice();
+        let indirect1_inode_blkno = direct_inode_page.opaque.next_blkno;
+
         Self {
             relation,
-            direct_inode: page_read(relation, blkno),
+            direct_inode,
+            indirect1_inode_blkno,
         }
     }
 
@@ -43,12 +53,11 @@ impl VirtualPageReader {
     pub fn get_block_id(&self, virtual_id: u32) -> u32 {
         let mut virtual_id = virtual_id as usize;
         if virtual_id < DIRECT_COUNT {
-            let slice = &self.direct_inode.data()[virtual_id * 4..][..4];
-            return u32::from_le_bytes(slice.try_into().unwrap());
+            return self.direct_inode[virtual_id];
         }
 
         virtual_id -= DIRECT_COUNT;
-        let indirect1_inode = page_read(self.relation, self.direct_inode.opaque.next_blkno);
+        let indirect1_inode = page_read(self.relation, self.indirect1_inode_blkno);
         if virtual_id < INDIRECT1_COUNT {
             let indirect1_id = virtual_id / DIRECT_COUNT;
             let indirect1_offset = virtual_id % DIRECT_COUNT;
