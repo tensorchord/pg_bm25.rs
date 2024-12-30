@@ -1,7 +1,7 @@
 use std::{fmt::Debug, io::Read, mem::MaybeUninit};
 
 use crate::{
-    page::{page_read, PageReadGuard, PageReader, VirtualPageReader},
+    page::{page_read, PageReader, VirtualPageReader},
     segment::{field_norm::id_to_fieldnorm, posting::SkipBlockFlags},
     utils::compress_block::BlockDecoder,
     weight::Bm25Weight,
@@ -52,7 +52,6 @@ pub struct PostingReader<const WITH_FREQ: bool> {
     block_data_reader: VirtualPageReader,
     cur_page: pgrx::pg_sys::BlockNumber,
     page_offset: usize,
-    page_inner: Option<PageReadGuard>,
     cur_block: usize,
     block_offset: usize,
     remain_doc_cnt: u32,
@@ -108,7 +107,6 @@ impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
             block_data_reader,
             cur_page: 0,
             page_offset: 0,
-            page_inner: None,
             cur_block: 0,
             block_offset: 0,
             remain_doc_cnt: term_info.doc_count,
@@ -234,12 +232,10 @@ impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
             self.skip_blocks[self.cur_block - 1].last_doc
         };
 
-        let page = self.page_inner.get_or_insert_with(|| {
-            page_read(
-                self.index,
-                self.block_data_reader.get_block_id(self.cur_page),
-            )
-        });
+        let page = page_read(
+            self.index,
+            self.block_data_reader.get_block_id(self.cur_page),
+        );
 
         if self.remain_doc_cnt < COMPRESSION_BLOCK_SIZE as u32 {
             debug_assert!(skip.flag.contains(SkipBlockFlags::UNFULLED));
@@ -285,7 +281,6 @@ impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
 
         if self.completed() {
             self.page_offset = 0;
-            self.page_inner = None;
             return;
         }
 
@@ -295,7 +290,6 @@ impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
         {
             self.cur_page += 1;
             self.page_offset = 0;
-            self.page_inner = None;
         }
     }
 }
