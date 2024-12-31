@@ -13,12 +13,18 @@ const TOKEN_PATTERN: &str = r"(?u)\b\w\w+\b";
 
 lazy_static::lazy_static! {
     static ref TOKEN_PATTERN_RE: regex::Regex = regex::Regex::new(TOKEN_PATTERN).unwrap();
-    pub(crate) static ref STOP_WORDS: HashSet<String> = {
+    pub static ref STOP_WORDS: HashSet<String> = {
+        [
+            "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is",
+            "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there",
+            "these", "they", "this", "to", "was", "will", "with",
+        ].iter().map(|s| s.to_string()).collect()
+    };
+    pub static ref FULL_STOP_WORDS: HashSet<String> = {
         let words = stop_words::get(stop_words::LANGUAGE::English);
         words.into_iter().collect()
     };
 
-    // static ref TOKENIZER: BertWithStemmerAndSplit = Default::default();
     static ref BERT_TOKENIZER: BertWithStemmerAndSplit = Default::default();
     static ref WORD_TOKENIZER: WordLevelTokenizer = Default::default();
     static ref TOCKENIZER: Tocken = Tocken(Tockenizer::loads(std::str::from_utf8(TOCKEN).expect("str")));
@@ -60,13 +66,27 @@ pub fn vocab_len() -> u32 {
 }
 
 pub fn unicode_tokenize(text: &str) -> Vec<String> {
-    let lowercase = text.to_lowercase();
     let mut tokens = Vec::new();
-    for word in lowercase.unicode_words() {
-        if STOP_WORDS.contains(word) {
+    for word in text.unicode_words() {
+        // trim `'s` for English
+        let mut lowercase = word.to_lowercase();
+        if lowercase.len() >= 2 && lowercase.ends_with("s") {
+            let chars = lowercase.chars().collect::<Vec<char>>();
+            let c = chars[chars.len() - 2];
+            if c == '\'' || c == '\u{2019}' || c == '\u{FF07}' {
+                lowercase = chars[..chars.len() - 2].iter().collect::<String>();
+            }
+        }
+        let token = tantivy_stemmers::algorithms::english_porter(&lowercase).to_string();
+        if token.len() == 0 {
             continue;
         }
-        tokens.push(tantivy_stemmers::algorithms::english_porter_2(word).to_string());
+        if !STOP_WORDS.contains(&lowercase) {
+            tokens.push(token.clone());
+        }
+        if !FULL_STOP_WORDS.contains(&lowercase) {
+            tokens.push(token);
+        }
     }
     tokens
 }
