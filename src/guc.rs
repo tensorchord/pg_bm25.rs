@@ -6,7 +6,7 @@ pub static BM25_LIMIT: GucSetting<i32> = GucSetting::<i32>::new(100);
 pub static ENABLE_INDEX: GucSetting<bool> = GucSetting::<bool>::new(true);
 pub static SEGMENT_GROWING_MAX_PAGE_SIZE: GucSetting<i32> = GucSetting::<i32>::new(1000);
 pub static TOKENIZER_NAME: GucSetting<Option<&CStr>> =
-    GucSetting::<Option<&CStr>>::new(Some(c"WORD"));
+    GucSetting::<Option<&CStr>>::new(Some(c"BERT"));
 
 pub unsafe fn init() {
     GucRegistry::define_int_guc(

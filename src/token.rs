@@ -12,14 +12,14 @@ const TOKEN_PATTERN: &str = r"(?u)\b\w\w+\b";
 
 lazy_static::lazy_static! {
     static ref TOKEN_PATTERN_RE: regex::Regex = regex::Regex::new(TOKEN_PATTERN).unwrap();
-    pub static ref STOP_WORDS: HashSet<String> = {
+    pub static ref STOP_WORDS_LUCENE: HashSet<String> = {
         [
             "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is",
             "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there",
             "these", "they", "this", "to", "was", "will", "with",
         ].iter().map(|s| s.to_string()).collect()
     };
-    pub static ref FULL_STOP_WORDS: HashSet<String> = {
+    pub static ref STOP_WORDS_NLTK: HashSet<String> = {
         let words = stop_words::get(stop_words::LANGUAGE::English);
         words.into_iter().collect()
     };
@@ -52,6 +52,7 @@ pub fn vocab_len() -> u32 {
         "BERT" => BERT_TOKENIZER.vocab_len(),
         "TOCKEN" => TOCKENIZER.vocab_len(),
         "UNICODE" => {
+            // TODO: find the correct token table name
             pgrx::Spi::get_one::<i64>("SELECT max(id) FROM bm25_catalog.test_token;")
                 .expect("failed to get count")
                 .expect("no count") as u32
@@ -77,10 +78,10 @@ pub fn unicode_tokenize(text: &str) -> Vec<String> {
         if token.is_empty() {
             continue;
         }
-        if !STOP_WORDS.contains(&lowercase) {
+        if !STOP_WORDS_LUCENE.contains(&lowercase) {
             tokens.push(token.clone());
         }
-        if !FULL_STOP_WORDS.contains(&lowercase) {
+        if !STOP_WORDS_NLTK.contains(&lowercase) {
             tokens.push(token);
         }
     }
@@ -106,7 +107,7 @@ impl Tokenizer for BertWithStemmerAndSplit {
         let lower_text = text.to_lowercase();
         let split = TOKEN_PATTERN_RE.find_iter(&lower_text);
         for token in split {
-            if STOP_WORDS.contains(token.as_str()) {
+            if STOP_WORDS_NLTK.contains(token.as_str()) {
                 continue;
             }
             let stemmed_token =

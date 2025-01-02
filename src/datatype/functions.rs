@@ -54,7 +54,7 @@ pub fn search_bm25query(
 }
 
 #[pgrx::pg_extern()]
-pub fn incremental_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
+pub fn document_unicode_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
     let tokens = unicode_tokenize(text);
     let args = Some(vec![(
         pgrx::PgBuiltInOids::TEXTARRAYOID.oid(),
@@ -106,7 +106,7 @@ pub fn incremental_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
 }
 
 #[pgrx::pg_extern(immutable, strict, parallel_safe)]
-pub fn query_tokenize(query: &str, token_table: &str) -> Bm25VectorOutput {
+pub fn query_unicode_tokenize(query: &str, token_table: &str) -> Bm25VectorOutput {
     let tokens = unicode_tokenize(query);
     let args = Some(vec![(
         pgrx::PgBuiltInOids::TEXTARRAYOID.oid(),
