@@ -74,7 +74,7 @@ pub fn unicode_tokenize(text: &str) -> Vec<String> {
             }
         }
         let token = tantivy_stemmers::algorithms::english_porter(&lowercase).to_string();
-        if token.len() == 0 {
+        if token.is_empty() {
             continue;
         }
         if !STOP_WORDS.contains(&lowercase) {

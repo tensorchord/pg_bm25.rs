@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    num::NonZero,
-};
+use std::{collections::HashMap, num::NonZero};
 
 use pgrx::{pg_sys::panic::ErrorReportable, IntoDatum};
 
@@ -12,28 +9,12 @@ use crate::{
     weight::bm25_score_batch,
 };
 
-use super::{
-    memory_bm25vector::{Bm25VectorInput, Bm25VectorOutput},
-    Bm25VectorBorrowed,
-};
+use super::memory_bm25vector::{Bm25VectorInput, Bm25VectorOutput};
 
 #[pgrx::pg_extern(immutable, strict, parallel_safe)]
 pub fn tokenize(text: &str) -> Bm25VectorOutput {
     let term_ids = crate::token::tokenize(text);
-    let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-    for term_id in term_ids {
-        *map.entry(term_id).or_insert(0) += 1;
-    }
-    let mut doc_len: u32 = 0;
-    let mut indexes = Vec::with_capacity(map.len());
-    let mut values = Vec::with_capacity(map.len());
-    for (index, value) in map {
-        indexes.push(index);
-        values.push(value);
-        doc_len = doc_len.checked_add(value).expect("overflow");
-    }
-    let vector = unsafe { Bm25VectorBorrowed::new_unchecked(doc_len, &indexes, &values) };
-    Bm25VectorOutput::new(vector)
+    Bm25VectorOutput::from_ids(&term_ids)
 }
 
 #[pgrx::pg_extern(stable, strict, parallel_safe)]
@@ -117,21 +98,11 @@ pub fn incremental_tokenize(text: &str, token_table: &str) -> Bm25VectorOutput {
         }
     });
 
-    let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-    for token in tokens.iter() {
-        *map.entry(*token_ids.get(token).expect("miss token"))
-            .or_insert(0) += 1;
-    }
-    let mut doc_len: u32 = 0;
-    let mut indexes = Vec::with_capacity(map.len());
-    let mut values = Vec::with_capacity(map.len());
-    for (index, value) in map {
-        indexes.push(index);
-        values.push(value);
-        doc_len = doc_len.checked_add(value).expect("overflow");
-    }
-    let vector = unsafe { Bm25VectorBorrowed::new_unchecked(doc_len, &indexes, &values) };
-    Bm25VectorOutput::new(vector)
+    let ids = tokens
+        .iter()
+        .map(|t| *token_ids.get(t).expect("unknown token"))
+        .collect::<Vec<_>>();
+    Bm25VectorOutput::from_ids(&ids)
 }
 
 #[pgrx::pg_extern(immutable, strict, parallel_safe)]
@@ -166,22 +137,10 @@ pub fn query_tokenize(query: &str, token_table: &str) -> Bm25VectorOutput {
         }
     });
 
-    let mut map: BTreeMap<u32, u32> = BTreeMap::new();
-    for token in tokens.iter() {
-        let id = token_ids.get(token);
-        match id {
-            Some(id) => *map.entry(*id).or_insert(0) += 1,
-            None => continue,
-        }
-    }
-    let mut doc_len: u32 = 0;
-    let mut indexes = Vec::with_capacity(map.len());
-    let mut values = Vec::with_capacity(map.len());
-    for (index, value) in map {
-        indexes.push(index);
-        values.push(value);
-        doc_len = doc_len.checked_add(value).expect("overflow");
-    }
-    let vector = unsafe { Bm25VectorBorrowed::new_unchecked(doc_len, &indexes, &values) };
-    Bm25VectorOutput::new(vector)
+    let ids = tokens
+        .iter()
+        .filter(|&t| token_ids.contains_key(t))
+        .map(|t| *token_ids.get(t).unwrap())
+        .collect::<Vec<_>>();
+    Bm25VectorOutput::from_ids(&ids)
 }
