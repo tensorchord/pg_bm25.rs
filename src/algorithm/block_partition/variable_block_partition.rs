@@ -34,6 +34,7 @@ impl VariableBlockPartition {
         }
     }
 }
+
 impl BlockPartitionTrait for VariableBlockPartition {
     fn partitions(&self) -> &[u32] {
         &self.partitions
@@ -114,7 +115,7 @@ impl BlockPartitionTrait for VariableBlockPartition {
         for (&start, &end) in
             (std::iter::once(&0).chain(self.partitions.iter())).zip(self.partitions.iter())
         {
-            let max_doc: u32 = self.scores[start as usize..(end + 1) as usize]
+            let max_doc: u32 = self.scores[start as usize..=end as usize]
                 .iter()
                 .cloned()
                 .enumerate()

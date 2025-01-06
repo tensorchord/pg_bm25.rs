@@ -165,7 +165,7 @@ impl InvertedWrite for InvertedAppender {
                 unfulled_doc_cnt += 1;
                 if unfulled_doc_cnt == 128 {
                     let mew_last_full_block_last_docid = Some(NonZeroU32::new(docid).unwrap());
-                    let (auxiliary, data) = self.block_encode.encode(
+                    let data = self.block_encode.encode(
                         last_full_block_last_docid,
                         &mut term_meta.unfulled_docid,
                         &mut term_meta.unfulled_freq,
@@ -183,9 +183,9 @@ impl InvertedWrite for InvertedAppender {
                         last_doc: last_full_block_last_docid.unwrap().get(),
                         blockwand_tf,
                         doc_cnt: 128,
+                        size: data.len().try_into().unwrap(),
                         blockwand_fieldnorm_id,
                         flag,
-                        auxiliary,
                     };
                     append_skip_info(self.index, &mut skip_info_guard, skip_info);
                 }
@@ -196,9 +196,9 @@ impl InvertedWrite for InvertedAppender {
                     last_doc: term_meta.unfulled_docid[unfulled_doc_cnt as usize - 1],
                     blockwand_tf,
                     doc_cnt: unfulled_doc_cnt,
+                    size: 0,
                     blockwand_fieldnorm_id,
                     flag: SkipBlockFlags::UNFULLED,
-                    auxiliary: 0,
                 };
                 append_skip_info(self.index, &mut skip_info_guard, skip_info);
                 block_count += 1;

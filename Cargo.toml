@@ -22,10 +22,12 @@ bitflags = "2.6.0"
 bitpacking = { version = "0.9", default-features = false, features = [
     "bitpacker4x",
 ] }
+bitvec = "1.0.1"
+broadword = "0.2.2"
 bytemuck = "1.18"
 enum_dispatch = "0.3.13"
 lazy_static = "1.5"
-pgrx = { version = "=0.12.8", default-features = false, features = ["cshim"] }
+pgrx = { version = "=0.12.9", default-features = false, features = ["cshim"] }
 regex = "1.11.1"
 serde = { version = "1.0.216", features = ["derive"] }
 stop-words = "0.8.0"

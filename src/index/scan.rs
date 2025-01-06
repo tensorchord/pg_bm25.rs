@@ -120,6 +120,10 @@ pub unsafe extern "C" fn amendscan(scan: pgrx::pg_sys::IndexScanDesc) {
 
 // return top-k results
 unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorrowed) -> Vec<u64> {
+    if query_vector.len() == 0 {
+        return Vec::new();
+    }
+
     let page = page_read(index, METAPAGE_BLKNO);
     let meta: &MetaPageData = page.as_ref();
     let avgdl = meta.avgdl();

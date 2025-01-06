@@ -70,9 +70,9 @@ pub struct SkipBlock {
     last_doc: u32,
     blockwand_tf: u32,
     doc_cnt: u32,
+    size: u16,
     blockwand_fieldnorm_id: u8,
     flag: SkipBlockFlags,
-    auxiliary: u16,
 }
 
 unsafe impl Zeroable for SkipBlock {}

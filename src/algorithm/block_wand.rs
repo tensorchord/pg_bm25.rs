@@ -60,6 +60,8 @@ pub fn block_wand(
     while let Some((before_pivot_len, pivot_len, pivot_doc)) =
         find_pivot_doc(&scorers, computer.threshold())
     {
+        debug_assert!(pivot_doc != TERMINATED_DOC);
+        debug_assert!(before_pivot_len < pivot_len);
         let block_max_score_upperbound: f32 = scorers[..pivot_len]
             .iter_mut()
             .map(|scorer| {

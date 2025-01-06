@@ -208,9 +208,9 @@ impl PostingSerializer {
                 last_doc: *self.doc_ids.last().unwrap(),
                 doc_cnt: self.doc_ids.len().try_into().unwrap(),
                 blockwand_tf,
+                size: 0,
                 blockwand_fieldnorm_id,
                 flag: SkipBlockFlags::UNFULLED,
-                auxiliary: 0,
             };
             self.skip_info_writer
                 .as_mut()
@@ -228,10 +228,10 @@ impl PostingSerializer {
 
     pub fn flush_block(&mut self, blockwand_tf: u32, blockwand_fieldnorm_id: u8) {
         let offset = NonZeroU32::new(self.prev_block_last_doc_id);
-        let (auxiliary, data) =
-            self.block_encode
-                .encode(offset, &mut self.doc_ids, &mut self.term_freqs);
         self.prev_block_last_doc_id = *self.doc_ids.last().unwrap();
+        let data = self
+            .block_encode
+            .encode(offset, &mut self.doc_ids, &mut self.term_freqs);
 
         let page_changed = self
             .block_data_writer
@@ -248,9 +248,9 @@ impl PostingSerializer {
             last_doc: self.prev_block_last_doc_id,
             doc_cnt,
             blockwand_tf,
+            size: data.len().try_into().unwrap(),
             blockwand_fieldnorm_id,
             flag,
-            auxiliary,
         };
         self.skip_info_writer
             .as_mut()

@@ -16,13 +16,12 @@ pub trait BlockEncodeTrait {
         offset: Option<NonZero<u32>>,
         docids: &mut [u32],
         freqs: &mut [u32],
-    ) -> (u16, &[u8]);
+    ) -> &[u8];
 }
 
 #[enum_dispatch]
 pub trait BlockDecodeTrait {
-    fn decode(&mut self, data: &[u8], auxiliary: u16, offset: Option<NonZero<u32>>, doc_cnt: u32);
-    fn size(&self, auxiliary: u16, doc_cnt: u32) -> usize;
+    fn decode(&mut self, data: &[u8], offset: Option<NonZero<u32>>, doc_cnt: u32);
     fn next(&mut self) -> bool;
     fn seek(&mut self, target: u32) -> bool;
     fn docid(&self) -> u32;

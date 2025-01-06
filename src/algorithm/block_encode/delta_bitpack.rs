@@ -23,26 +23,29 @@ impl BlockEncodeTrait for DeltaBitpackEncode {
         offset: Option<NonZeroU32>,
         docids: &mut [u32],
         freqs: &mut [u32],
-    ) -> (u16, &[u8]) {
+    ) -> &[u8] {
         self.output.clear();
+        freqs.iter_mut().for_each(|v| *v -= 1);
+
         let docid_bits = num_bits_strictly_sorted(offset, docids);
         let freq_bits = num_bits(freqs);
         let docid_size = compress_size(docid_bits, docids.len());
         let freq_size = compress_size(freq_bits, freqs.len());
-        self.output.resize(docid_size + freq_size, 0);
+        self.output.extend_from_slice(&[docid_bits, freq_bits]);
+        self.output.resize(docid_size + freq_size + 2, 0);
 
-        compress_strictly_sorted(offset, docids, &mut self.output, docid_bits);
-        freqs.iter_mut().for_each(|v| *v -= 1);
-        compress(freqs, &mut self.output[docid_size..], freq_bits);
-
-        let auxiliary = (docid_bits as u16) << 8 | freq_bits as u16;
-        (auxiliary, &self.output)
+        let mut output = &mut self.output[2..];
+        compress_strictly_sorted(offset, docids, output, docid_bits);
+        output = &mut output[docid_size..];
+        compress(freqs, output, freq_bits);
+        &self.output
     }
 }
 
 pub struct DeltaBitpackDecode {
     inner: Box<DeltaBitpackReaderInner>,
     offset: usize,
+    origin_offset: Option<NonZeroU32>,
 }
 
 struct DeltaBitpackReaderInner {
@@ -58,31 +61,27 @@ impl DeltaBitpackDecode {
                 freqs: Vec::new(),
             }),
             offset: 0,
+            origin_offset: None,
         }
     }
 }
 
 impl BlockDecodeTrait for DeltaBitpackDecode {
-    fn decode(&mut self, data: &[u8], auxiliary: u16, offset: Option<NonZeroU32>, doc_cnt: u32) {
+    fn decode(&mut self, mut data: &[u8], offset: Option<NonZeroU32>, doc_cnt: u32) {
         self.inner.docids.resize(doc_cnt as usize, 0);
         self.inner.freqs.resize(doc_cnt as usize, 0);
 
-        let docid_bits = (auxiliary >> 8) as u8;
+        let docid_bits = data[0];
+        let freq_bits = data[1];
+        data = &data[2..];
         decompress_strictly_sorted(offset, data, &mut self.inner.docids, docid_bits);
         let docid_size = compress_size(docid_bits, doc_cnt as usize);
+        data = &data[docid_size..];
+        decompress(data, &mut self.inner.freqs, freq_bits);
 
-        let freq_bits = (auxiliary & 0xff) as u8;
-        decompress(&data[docid_size..], &mut self.inner.freqs, freq_bits);
         self.inner.freqs.iter_mut().for_each(|v| *v += 1);
-
         self.offset = 0;
-    }
-
-    fn size(&self, auxiliary: u16, doc_cnt: u32) -> usize {
-        let docid_bits = (auxiliary >> 8) as usize;
-        let freq_bits = (auxiliary & 0xff) as usize;
-        compress_size(docid_bits as u8, doc_cnt as usize)
-            + compress_size(freq_bits as u8, doc_cnt as usize)
+        self.origin_offset = offset;
     }
 
     fn next(&mut self) -> bool {
@@ -95,7 +94,7 @@ impl BlockDecodeTrait for DeltaBitpackDecode {
     }
 
     fn seek(&mut self, target: u32) -> bool {
-        self.offset = self.inner.docids[self.offset..].partition_point(|&v| v < target);
+        self.offset += self.inner.docids[self.offset..].partition_point(|&v| v < target);
         self.offset < self.inner.docids.len()
     }
 
@@ -214,18 +213,28 @@ fn decompress_strictly_sorted(
     uncompressed: &mut [u32],
     bit_width: u8,
 ) {
+    assert!(bit_width <= 32);
     let mut prev = offset.map(|x| x.get()).unwrap_or(u32::MAX);
-    let mut mini_buffer: u32 = 0u32;
+
+    if bit_width == 0 {
+        for v in uncompressed.iter_mut() {
+            prev = prev.wrapping_add(1);
+            *v = prev;
+        }
+        return;
+    }
+
+    let mut mini_buffer: u64 = 0;
     let mut cursor = 0; //< number of bits read in the mini_buffer.
     let mut idx = 0;
     for &byte in compressed {
-        mini_buffer |= (byte as u32) << cursor;
+        mini_buffer |= (byte as u64) << cursor;
         cursor += 8;
         while cursor >= bit_width {
             let delta = mini_buffer & ((1 << bit_width) - 1);
             mini_buffer >>= bit_width;
             cursor -= bit_width;
-            let v = prev.wrapping_add(delta).wrapping_add(1);
+            let v = prev.wrapping_add(delta as u32).wrapping_add(1);
             prev = v;
             uncompressed[idx] = v;
             idx += 1;
@@ -237,17 +246,18 @@ fn decompress_strictly_sorted(
 }
 
 fn decompress(compressed: &[u8], uncompressed: &mut [u32], bit_width: u8) {
-    let mut mini_buffer: u32 = 0u32;
+    assert!(bit_width <= 32);
+    let mut mini_buffer: u64 = 0;
     let mut cursor = 0; //< number of bits read in the mini_buffer.
     let mut idx = 0;
     for &byte in compressed {
-        mini_buffer |= (byte as u32) << cursor;
+        mini_buffer |= (byte as u64) << cursor;
         cursor += 8;
         while cursor >= bit_width {
             let v = mini_buffer & ((1 << bit_width) - 1);
             mini_buffer >>= bit_width;
             cursor -= bit_width;
-            uncompressed[idx] = v;
+            uncompressed[idx] = v as u32;
             idx += 1;
             if idx == uncompressed.len() {
                 return;
@@ -261,15 +271,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_delta_bitpack() {
+    fn test_delta_bitpack_next() {
         let mut encoder = DeltaBitpackEncode::new();
         let mut decoder = DeltaBitpackDecode::new();
 
-        let docids = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
-        let freqs = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let mut docids = rand::seq::index::sample(&mut rand::thread_rng(), 10000, 100)
+            .into_iter()
+            .map(|x| x as u32)
+            .collect::<Vec<_>>();
+        docids.sort_unstable();
+        let freqs = (0..100)
+            .map(|_| rand::random::<u32>() % 1000 + 1)
+            .collect::<Vec<_>>();
         let offset = NonZeroU32::new(0);
-        let (auxiliary, data) = encoder.encode(offset, &mut docids.clone(), &mut freqs.clone());
-        decoder.decode(data, auxiliary, offset, docids.len() as u32);
+
+        println!("docids: {:?}", docids);
+        println!("freqs: {:?}", freqs);
+
+        let data = encoder.encode(offset, &mut docids.clone(), &mut freqs.clone());
+        decoder.decode(data, offset, docids.len() as u32);
 
         for i in 0..docids.len() {
             assert_eq!(docids[i], decoder.docid());
@@ -278,6 +298,92 @@ mod tests {
                 assert!(decoder.next());
             } else {
                 assert!(!decoder.next());
+            }
+        }
+    }
+
+    #[test]
+    fn test_delta_bitpack_seek() {
+        let mut encoder = DeltaBitpackEncode::new();
+        let mut decoder = DeltaBitpackDecode::new();
+
+        let mut docids = rand::seq::index::sample(&mut rand::thread_rng(), 10000, 100)
+            .into_iter()
+            .map(|x| x as u32)
+            .collect::<Vec<_>>();
+        docids.sort_unstable();
+        let freqs = (0..100)
+            .map(|_| rand::random::<u32>() % 1000 + 1)
+            .collect::<Vec<_>>();
+        let offset = NonZeroU32::new(0);
+
+        println!("docids: {:?}", docids);
+        println!("freqs: {:?}", freqs);
+
+        let data = encoder.encode(offset, &mut docids.clone(), &mut freqs.clone());
+        decoder.decode(data, offset, docids.len() as u32);
+
+        for i in 0..docids.len() {
+            assert_eq!(docids[i], decoder.docid());
+            assert_eq!(freqs[i], decoder.freq());
+            if i + 1 < docids.len() {
+                assert!(decoder.seek(docids[i] + 1));
+            } else {
+                assert!(!decoder.seek(docids[i] + 1));
+            }
+        }
+    }
+
+    #[test]
+    fn test_delta_bitpack_seek2() {
+        let mut encoder = DeltaBitpackEncode::new();
+        let mut decoder = DeltaBitpackDecode::new();
+
+        let mut docids = rand::seq::index::sample(&mut rand::thread_rng(), 10000, 100)
+            .into_iter()
+            .map(|x| x as u32)
+            .collect::<Vec<_>>();
+        docids.sort_unstable();
+        let freqs = (0..100)
+            .map(|_| rand::random::<u32>() % 1000 + 1)
+            .collect::<Vec<_>>();
+        let offset = NonZeroU32::new(0);
+
+        println!("docids: {:?}", docids);
+        println!("freqs: {:?}", freqs);
+
+        let data = encoder.encode(offset, &mut docids.clone(), &mut freqs.clone());
+        decoder.decode(data, offset, docids.len() as u32);
+
+        assert_eq!(docids[0], decoder.docid());
+        assert_eq!(freqs[0], decoder.freq());
+
+        assert!(decoder.seek(docids.last().unwrap().clone()));
+        assert_eq!(docids.last().unwrap().clone(), decoder.docid());
+    }
+
+    #[test]
+    fn test_delta_bitpack_zero_bit_width() {
+        let mut encoder = DeltaBitpackEncode::new();
+        let mut decoder = DeltaBitpackDecode::new();
+
+        let docids = vec![10];
+        let freqs = vec![1];
+        let offset = NonZeroU32::new(9);
+
+        println!("docids: {:?}", docids);
+        println!("freqs: {:?}", freqs);
+
+        let data = encoder.encode(offset, &mut docids.clone(), &mut freqs.clone());
+        decoder.decode(data, offset, docids.len() as u32);
+
+        for i in 0..docids.len() {
+            assert_eq!(docids[i], decoder.docid());
+            assert_eq!(freqs[i], decoder.freq());
+            if i + 1 < docids.len() {
+                assert!(decoder.seek(docids[i] + 1));
+            } else {
+                assert!(!decoder.seek(docids[i] + 1));
             }
         }
     }

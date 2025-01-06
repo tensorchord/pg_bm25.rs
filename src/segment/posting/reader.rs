@@ -105,7 +105,7 @@ impl PostingCursor {
 
         let skip = self.skip_info();
         self.decode_offset = skip.last_doc;
-        self.page_offset += self.block_decode.size(skip.auxiliary, skip.doc_cnt);
+        self.page_offset += skip.size as usize;
         if skip.flag.contains(SkipBlockFlags::PAGE_CHANGED) || self.is_in_unfulled_block() {
             self.block_page_id += 1;
             self.page_offset = 0;
@@ -176,10 +176,14 @@ impl PostingCursor {
 
         if self.is_in_unfulled_block() {
             let term_meta: &PostingTermMetaData = self.term_meta_guard.as_ref();
-            self.page_offset = term_meta.unfulled_docid.partition_point(|&d| d < docid)
+            self.page_offset = term_meta.unfulled_docid[..self.unfulled_doc_cnt as usize]
+                .partition_point(|&d| d < docid);
+            debug_assert!(self.page_offset < self.unfulled_doc_cnt as usize);
         } else {
-            self.block_decode.seek(docid);
+            let incomplete = self.block_decode.seek(docid);
+            debug_assert!(incomplete);
         }
+        debug_assert!(self.docid() >= docid);
         self.docid()
     }
 
@@ -201,8 +205,7 @@ impl PostingCursor {
             )
         });
         self.block_decode.decode(
-            &page.data()[self.page_offset..],
-            skip.auxiliary,
+            &page.data()[self.page_offset..][..skip.size as usize],
             NonZeroU32::new(self.decode_offset),
             skip.doc_cnt,
         );
@@ -212,11 +215,13 @@ impl PostingCursor {
         if self.completed() {
             return TERMINATED_DOC;
         }
+        debug_assert!(self.block_decoded);
         if self.is_in_unfulled_block() {
             debug_assert!(self.page_offset < self.unfulled_doc_cnt as usize);
             let term_meta: &PostingTermMetaData = self.term_meta_guard.as_ref();
             return term_meta.unfulled_docid[self.page_offset];
         }
+        debug_assert!(self.block_decode.docid() <= self.last_doc_in_block());
         self.block_decode.docid()
     }
 
@@ -241,6 +246,9 @@ impl PostingCursor {
     }
 
     pub fn last_doc_in_block(&self) -> u32 {
+        if self.completed() {
+            return TERMINATED_DOC;
+        }
         let skip = self.skip_info();
         skip.last_doc
     }
