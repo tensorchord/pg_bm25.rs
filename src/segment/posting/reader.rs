@@ -75,12 +75,8 @@ impl PostingCursor {
         let term_meta: &PostingTermMetaData = term_meta_guard.as_ref();
         let block_page_reader = VirtualPageReader::new(index, term_meta.block_data_blkno);
         let remain_block_cnt = term_meta.block_count;
-        let unfulled_docid = term_meta.unfulled_docid[..term_meta.unfulled_doc_cnt as usize]
-            .try_into()
-            .unwrap();
-        let unfulled_freq = term_meta.unfulled_freq[..term_meta.unfulled_doc_cnt as usize]
-            .try_into()
-            .unwrap();
+        let unfulled_docid = term_meta.unfulled_docid[..term_meta.unfulled_doc_cnt as usize].into();
+        let unfulled_freq = term_meta.unfulled_freq[..term_meta.unfulled_doc_cnt as usize].into();
 
         let mut this = Self {
             index,
