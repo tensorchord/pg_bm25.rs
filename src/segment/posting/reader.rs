@@ -3,7 +3,7 @@ use std::{mem::MaybeUninit, num::NonZeroU32};
 use crate::{
     algorithm::{BlockDecode, BlockDecodeTrait},
     options::EncodeOption,
-    page::{page_read, PageReadGuard, VirtualPageReader},
+    page::{bm25_page_size, page_read, VirtualPageReader},
     segment::{field_norm::id_to_fieldnorm, posting::SkipBlockFlags},
     weight::Bm25Weight,
 };
@@ -44,21 +44,22 @@ impl PostingTermInfoReader {
 
 pub struct PostingCursor {
     index: pgrx::pg_sys::Relation,
-    term_meta_guard: PageReadGuard,
     block_decode: BlockDecode,
-    // ----
+    // block reader
     block_page_reader: VirtualPageReader,
     block_page_id: u32,
-    page_inner: Option<PageReadGuard>,
     page_offset: usize,
-    // ----
-    skip_info_reader: PageReadGuard,
+    // skip info reader
+    skip_info_page_id: u32,
     skip_info_offset: usize,
     decode_offset: u32,
-    // ----
+    cur_skip_info: SkipBlock,
+    // helper state
     block_decoded: bool,
     remain_block_cnt: u32,
-    unfulled_doc_cnt: u32,
+    // unfulled block
+    unfulled_docid: Box<[u32]>,
+    unfulled_freq: Box<[u32]>,
 }
 
 impl PostingCursor {
@@ -73,25 +74,32 @@ impl PostingCursor {
         let block_decode = BlockDecode::new(encode_option);
         let term_meta: &PostingTermMetaData = term_meta_guard.as_ref();
         let block_page_reader = VirtualPageReader::new(index, term_meta.block_data_blkno);
-        let skip_info_reader = page_read(index, term_meta.skip_info_blkno);
         let remain_block_cnt = term_meta.block_count;
-        let unfulled_doc_cnt = term_meta.unfulled_doc_cnt;
+        let unfulled_docid = term_meta.unfulled_docid[..term_meta.unfulled_doc_cnt as usize]
+            .try_into()
+            .unwrap();
+        let unfulled_freq = term_meta.unfulled_freq[..term_meta.unfulled_doc_cnt as usize]
+            .try_into()
+            .unwrap();
 
-        Self {
+        let mut this = Self {
             index,
-            term_meta_guard,
             block_decode,
             block_page_reader,
             block_page_id: 0,
-            page_inner: None,
             page_offset: 0,
-            skip_info_reader,
+            skip_info_page_id: term_meta.skip_info_blkno,
             skip_info_offset: 0,
             decode_offset: 0,
+            cur_skip_info: SkipBlock::default(),
             block_decoded: false,
             remain_block_cnt,
-            unfulled_doc_cnt,
-        }
+            unfulled_docid,
+            unfulled_freq,
+        };
+
+        this.update_skip_info();
+        this
     }
 
     pub fn next_block(&mut self) -> bool {
@@ -99,25 +107,24 @@ impl PostingCursor {
         self.remain_block_cnt -= 1;
         self.block_decoded = false;
         if self.completed() {
-            self.page_inner = None;
             return false;
         }
 
-        let skip = self.skip_info();
+        let skip = &self.cur_skip_info;
         self.decode_offset = skip.last_doc;
         self.page_offset += skip.size as usize;
         if skip.flag.contains(SkipBlockFlags::PAGE_CHANGED) || self.is_in_unfulled_block() {
             self.block_page_id += 1;
             self.page_offset = 0;
-            self.page_inner = None;
         }
 
         self.skip_info_offset += std::mem::size_of::<SkipBlock>();
-        if self.skip_info_offset == self.skip_info_reader.data().len() {
+        if self.skip_info_offset == bm25_page_size() {
+            let page = page_read(self.index, self.skip_info_page_id);
+            self.skip_info_page_id = page.opaque.next_blkno;
             self.skip_info_offset = 0;
-            let next_blkno = self.skip_info_reader.opaque.next_blkno;
-            self.skip_info_reader = page_read(self.index, next_blkno);
         }
+        self.update_skip_info();
 
         true
     }
@@ -126,8 +133,8 @@ impl PostingCursor {
         debug_assert!(self.block_decoded);
         if self.is_in_unfulled_block() {
             self.page_offset += 1;
-            debug_assert!(self.page_offset <= self.unfulled_doc_cnt as usize);
-            if self.page_offset == self.unfulled_doc_cnt as usize {
+            debug_assert!(self.page_offset <= self.unfulled_doc_cnt() as usize);
+            if self.page_offset == self.unfulled_doc_cnt() as usize {
                 return false;
             }
             true
@@ -175,10 +182,8 @@ impl PostingCursor {
         }
 
         if self.is_in_unfulled_block() {
-            let term_meta: &PostingTermMetaData = self.term_meta_guard.as_ref();
-            self.page_offset = term_meta.unfulled_docid[..self.unfulled_doc_cnt as usize]
-                .partition_point(|&d| d < docid);
-            debug_assert!(self.page_offset < self.unfulled_doc_cnt as usize);
+            self.page_offset = self.unfulled_docid.partition_point(|&d| d < docid);
+            debug_assert!(self.page_offset < self.unfulled_doc_cnt() as usize);
         } else {
             let incomplete = self.block_decode.seek(docid);
             debug_assert!(incomplete);
@@ -197,13 +202,11 @@ impl PostingCursor {
             return;
         }
 
-        let skip = self.skip_info();
-        let page = self.page_inner.get_or_insert_with(|| {
-            page_read(
-                self.index,
-                self.block_page_reader.get_block_id(self.block_page_id),
-            )
-        });
+        let skip = &self.cur_skip_info;
+        let page = page_read(
+            self.index,
+            self.block_page_reader.get_block_id(self.block_page_id),
+        );
         self.block_decode.decode(
             &page.data()[self.page_offset..][..skip.size as usize],
             NonZeroU32::new(self.decode_offset),
@@ -217,9 +220,7 @@ impl PostingCursor {
         }
         debug_assert!(self.block_decoded);
         if self.is_in_unfulled_block() {
-            debug_assert!(self.page_offset < self.unfulled_doc_cnt as usize);
-            let term_meta: &PostingTermMetaData = self.term_meta_guard.as_ref();
-            return term_meta.unfulled_docid[self.page_offset];
+            return self.unfulled_docid[self.page_offset];
         }
         debug_assert!(self.block_decode.docid() <= self.last_doc_in_block());
         self.block_decode.docid()
@@ -229,9 +230,7 @@ impl PostingCursor {
         debug_assert!(!self.completed());
         debug_assert!(self.block_decoded);
         if self.is_in_unfulled_block() {
-            debug_assert!(self.page_offset < self.unfulled_doc_cnt as usize);
-            let term_meta: &PostingTermMetaData = self.term_meta_guard.as_ref();
-            return term_meta.unfulled_freq[self.page_offset];
+            return self.unfulled_freq[self.page_offset];
         }
         self.block_decode.freq()
     }
@@ -240,31 +239,34 @@ impl PostingCursor {
         if self.completed() {
             return 0.0;
         }
-        let skip = self.skip_info();
-        let len = id_to_fieldnorm(skip.blockwand_fieldnorm_id);
-        weight.score(len, skip.blockwand_tf)
+        let len = id_to_fieldnorm(self.cur_skip_info.blockwand_fieldnorm_id);
+        weight.score(len, self.cur_skip_info.blockwand_tf)
     }
 
     pub fn last_doc_in_block(&self) -> u32 {
         if self.completed() {
             return TERMINATED_DOC;
         }
-        let skip = self.skip_info();
-        skip.last_doc
+        self.cur_skip_info.last_doc
     }
 
     pub fn completed(&self) -> bool {
         self.remain_block_cnt == 0
     }
 
-    fn skip_info(&self) -> SkipBlock {
-        *bytemuck::from_bytes(
-            &self.skip_info_reader.data()[self.skip_info_offset..]
-                [..std::mem::size_of::<SkipBlock>()],
-        )
+    fn update_skip_info(&mut self) {
+        let page = page_read(self.index, self.skip_info_page_id);
+        let skip_info = *bytemuck::from_bytes(
+            &page.data()[self.skip_info_offset..][..std::mem::size_of::<SkipBlock>()],
+        );
+        self.cur_skip_info = skip_info;
+    }
+
+    fn unfulled_doc_cnt(&self) -> u32 {
+        self.unfulled_docid.len() as u32
     }
 
     fn is_in_unfulled_block(&self) -> bool {
-        self.unfulled_doc_cnt > 0 && self.remain_block_cnt == 1
+        !self.unfulled_docid.is_empty() && self.remain_block_cnt == 1
     }
 }
