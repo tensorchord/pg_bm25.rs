@@ -67,7 +67,7 @@ impl BlockPartitionTrait for VariableBlockPartition {
 
         let mut cost_bound = self.lambda;
         while self.eps1 == 0. || cost_bound < self.lambda / self.eps1 {
-            self.score_window.push(Default::default());
+            self.score_window.push(ScoreWindow::new(cost_bound));
             if cost_bound >= max_block_cost {
                 break;
             }
@@ -129,7 +129,6 @@ impl BlockPartitionTrait for VariableBlockPartition {
     }
 }
 
-#[derive(Default)]
 struct ScoreWindow {
     start: u32,
     end: u32,
@@ -139,6 +138,16 @@ struct ScoreWindow {
 }
 
 impl ScoreWindow {
+    fn new(cost_upper_bound: f32) -> Self {
+        Self {
+            start: 0,
+            end: 0,
+            cost_upper_bound,
+            sum: 0.,
+            max_queue: VecDeque::new(),
+        }
+    }
+
     fn advance_start(&mut self, scores: &[f32]) {
         let score = scores[self.start as usize];
         self.sum -= score;
@@ -160,5 +169,50 @@ impl ScoreWindow {
 
     fn cost(&self, fixed_cost: f32) -> f32 {
         (self.end - self.start) as f32 * self.max_queue.front().unwrap() - self.sum + fixed_cost
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_single() {
+        let mut partition = VariableBlockPartition::new(1., 0.01, 0.4);
+        partition.add_doc(1.);
+        partition.make_partitions();
+        assert_eq!(partition.partitions(), &[0]);
+        assert_eq!(partition.max_doc(), &[0]);
+    }
+
+    #[test]
+    fn test_split_block() {
+        let mut partition = VariableBlockPartition::new(0.1, 0.01, 0.4);
+        partition.add_doc(1.);
+        partition.add_doc(2.);
+        partition.make_partitions();
+        assert_eq!(partition.partitions(), &[0, 1]);
+        assert_eq!(partition.max_doc(), &[0, 1]);
+    }
+
+    #[test]
+    fn test_merge_block() {
+        let mut partition = VariableBlockPartition::new(f32::MAX, 0.01, 0.4);
+        partition.add_doc(1.);
+        partition.add_doc(2.);
+        partition.make_partitions();
+        assert_eq!(partition.partitions(), &[1]);
+        assert_eq!(partition.max_doc(), &[1]);
+    }
+
+    #[test]
+    fn test_optimal_block() {
+        let mut partition = VariableBlockPartition::new(1., 0.01, 0.4);
+        partition.add_doc(1.);
+        partition.add_doc(1.);
+        partition.add_doc(10.);
+        partition.make_partitions();
+        assert_eq!(partition.partitions(), &[1, 2]);
+        assert_eq!(partition.max_doc(), &[1, 2]);
     }
 }

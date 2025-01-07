@@ -262,7 +262,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_delta_bitpack_next() {
+    fn test_next() {
         let mut encoder = DeltaBitpackEncode::new();
         let mut decoder = DeltaBitpackDecode::new();
 
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_bitpack_seek() {
+    fn test_seek() {
         let mut encoder = DeltaBitpackEncode::new();
         let mut decoder = DeltaBitpackDecode::new();
 
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_bitpack_seek2() {
+    fn test_seek_long() {
         let mut encoder = DeltaBitpackEncode::new();
         let mut decoder = DeltaBitpackDecode::new();
 
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_bitpack_zero_bit_width() {
+    fn test_zero_bit_width() {
         let mut encoder = DeltaBitpackEncode::new();
         let mut decoder = DeltaBitpackDecode::new();
 

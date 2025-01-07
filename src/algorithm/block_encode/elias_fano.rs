@@ -372,7 +372,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_elias_fano_next() {
+    fn test_next() {
         let mut encoder = EliasFanoEncode::new();
         let mut decoder = EliasFanoDecode::new();
 
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn test_elias_fano_seek() {
+    fn test_seek() {
         let mut encoder = EliasFanoEncode::new();
         let mut decoder = EliasFanoDecode::new();
 
@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn test_elias_fano_seek2() {
+    fn test_seek_long() {
         let mut encoder = EliasFanoEncode::new();
         let mut decoder = EliasFanoDecode::new();
 
