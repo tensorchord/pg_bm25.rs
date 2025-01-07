@@ -43,67 +43,58 @@ impl BlockEncodeTrait for DeltaBitpackEncode {
 }
 
 pub struct DeltaBitpackDecode {
-    inner: Box<DeltaBitpackReaderInner>,
-    offset: usize,
-    origin_offset: Option<NonZeroU32>,
-}
-
-struct DeltaBitpackReaderInner {
     docids: Vec<u32>,
     freqs: Vec<u32>,
+    offset: usize,
 }
 
 impl DeltaBitpackDecode {
     pub fn new() -> Self {
         Self {
-            inner: Box::new(DeltaBitpackReaderInner {
-                docids: Vec::new(),
-                freqs: Vec::new(),
-            }),
+            docids: Vec::new(),
+            freqs: Vec::new(),
             offset: 0,
-            origin_offset: None,
         }
     }
 }
 
 impl BlockDecodeTrait for DeltaBitpackDecode {
     fn decode(&mut self, mut data: &[u8], offset: Option<NonZeroU32>, doc_cnt: u32) {
-        self.inner.docids.resize(doc_cnt as usize, 0);
-        self.inner.freqs.resize(doc_cnt as usize, 0);
+        self.docids.resize(doc_cnt as usize, 0);
+        self.freqs.resize(doc_cnt as usize, 0);
 
         let docid_bits = data[0];
         let freq_bits = data[1];
         data = &data[2..];
-        decompress_strictly_sorted(offset, data, &mut self.inner.docids, docid_bits);
+        decompress_strictly_sorted(offset, data, &mut self.docids, docid_bits);
         let docid_size = compress_size(docid_bits, doc_cnt as usize);
         data = &data[docid_size..];
-        decompress(data, &mut self.inner.freqs, freq_bits);
+        decompress(data, &mut self.freqs, freq_bits);
 
-        self.inner.freqs.iter_mut().for_each(|v| *v += 1);
+        self.freqs.iter_mut().for_each(|v| *v += 1);
         self.offset = 0;
-        self.origin_offset = offset;
     }
 
     fn next(&mut self) -> bool {
         self.offset += 1;
 
-        if self.offset == self.inner.docids.len() {
+        if self.offset == self.docids.len() {
             return false;
         }
         true
     }
 
     fn seek(&mut self, target: u32) -> bool {
-        self.offset += self.inner.docids[self.offset..].partition_point(|&v| v < target);
-        self.offset < self.inner.docids.len()
+        self.offset += self.docids[self.offset..].partition_point(|&v| v < target);
+        self.offset < self.docids.len()
     }
 
     fn docid(&self) -> u32 {
-        self.inner.docids[self.offset]
+        self.docids[self.offset]
     }
 
     fn freq(&self) -> u32 {
-        self.inner.freqs[self.offset]
+        self.freqs[self.offset]
     }
 }
 

@@ -4,8 +4,6 @@ use bitvec::{field::BitField, slice::BitSlice};
 
 use super::{BlockDecodeTrait, BlockEncodeTrait};
 
-// TODO: remove log1 sampling, because we don't need to access randomly
-
 pub struct EliasFanoEncode {
     output: Vec<u64>,
 }
@@ -233,16 +231,12 @@ impl EliasFanoDecode {
     }
 
     // pointer
-    fn pointer(&self, offset: u64, i: u64) -> u64 {
+    fn pointer0(&self, i: u64) -> u64 {
         if i == 0 {
             return 0;
         }
-        let pos = offset + (i - 1) * self.offsets.pointer_size;
+        let pos = (i - 1) * self.offsets.pointer_size;
         get_word56(&self.data, pos) & ((1 << self.offsets.pointer_size) - 1)
-    }
-
-    fn pointer0(&self, i: u64) -> u64 {
-        self.pointer(self.offsets.pointer0_offset, i)
     }
 }
 
@@ -251,13 +245,10 @@ struct EliasFanoOffsets {
     universe: u64,
     len: u64,
     log_sampling0: u64,
-    log_sampling1: u64,
     lower_bits: u64,
     mask: u64,
     higher_bits_length: u64,
     pointer_size: u64,
-    pointer0_offset: u64,
-    pointer1_offset: u64,
     higher_bits_offset: u64,
     lower_bits_offset: u64,
     end: u64,
@@ -265,11 +256,9 @@ struct EliasFanoOffsets {
 
 impl EliasFanoOffsets {
     const EF_LOG_SAMPLING0: u64 = 9;
-    const EF_LOG_SAMPLING1: u64 = 8;
 
     fn new(universe: u64, len: u64) -> Self {
         let log_sampling0 = Self::EF_LOG_SAMPLING0;
-        let log_sampling1 = Self::EF_LOG_SAMPLING1;
         let lower_bits = if universe > len {
             (universe / len).ilog2() as u64
         } else {
@@ -279,10 +268,7 @@ impl EliasFanoOffsets {
         let higher_bits_length = len + (universe >> lower_bits) + 2;
         let pointer_size = ceil_log2(higher_bits_length);
         let pointers0 = (higher_bits_length - len) >> log_sampling0;
-        let pointers1 = len >> log_sampling1;
-        let pointer0_offset = 0;
-        let pointer1_offset = pointers0 * pointer_size;
-        let higher_bits_offset = pointer1_offset + pointers1 * pointer_size;
+        let higher_bits_offset = pointers0 * pointer_size;
         let lower_bits_offset = higher_bits_offset + higher_bits_length;
         let end = lower_bits_offset + len * lower_bits;
 
@@ -290,13 +276,10 @@ impl EliasFanoOffsets {
             universe,
             len,
             log_sampling0,
-            log_sampling1,
             lower_bits,
             mask,
             higher_bits_length,
             pointer_size,
-            pointer0_offset,
-            pointer1_offset,
             higher_bits_offset,
             lower_bits_offset,
             end,
@@ -312,8 +295,6 @@ fn compress_elias_fano(
 ) {
     let offsets = EliasFanoOffsets::new(universe, len);
 
-    let sample1_mask = (1 << offsets.log_sampling1) - 1;
-
     let prev_len = buffer.len();
     buffer.resize(prev_len + offsets.end.div_ceil(64) as usize, 0);
     let buffer = BitSlice::<u64>::from_slice_mut(&mut buffer[prev_len..]);
@@ -327,8 +308,8 @@ fn compress_elias_fano(
                 ptr0 = 1;
                 continue;
             }
-            let ptr0_offset = offsets.pointer0_offset + (ptr0 - 1) * offsets.pointer_size;
-            assert!(ptr0_offset + offsets.pointer_size <= offsets.pointer1_offset);
+            let ptr0_offset = (ptr0 - 1) * offsets.pointer_size;
+            assert!(ptr0_offset + offsets.pointer_size <= offsets.higher_bits_offset);
             buffer[ptr0_offset as usize..(ptr0_offset + offsets.pointer_size) as usize]
                 .store((ptr0 << offsets.log_sampling0) + rank_end);
             ptr0 += 1;
@@ -356,15 +337,6 @@ fn compress_elias_fano(
         let low_offset = offsets.lower_bits_offset + i as u64 * offsets.lower_bits;
         assert!(low_offset + offsets.lower_bits <= offsets.end);
         buffer[low_offset as usize..(low_offset + offsets.lower_bits) as usize].store(low);
-
-        // set 1 pointers
-        if i != 0 && (i & sample1_mask) == 0 {
-            let ptr1 = i >> offsets.log_sampling1;
-            assert!(ptr1 > 0);
-            let ptr1_offset = offsets.pointer1_offset + (ptr1 as u64 - 1) * offsets.pointer_size;
-            assert!(ptr1_offset + offsets.pointer_size <= offsets.higher_bits_offset);
-            buffer[ptr1_offset as usize..(ptr1_offset + offsets.pointer_size) as usize].store(high);
-        }
 
         // set 0 pointers
         set_ptr0s(buffer, last_high + 1, high, i as u64);
