@@ -152,6 +152,9 @@ fn restore_ordering(term_scorers: &mut [SealedScorer], ord: usize) {
         }
         term_scorers.swap(i, i - 1);
     }
+    debug_assert!(is_sorted(
+        term_scorers.iter().map(|scorer| scorer.posting.docid())
+    ));
 }
 
 fn align_scorers(
@@ -178,4 +181,17 @@ fn advance_all_scorers_on_pivot(term_scorers: &mut Vec<SealedScorer>, pivot_len:
     }
     term_scorers.retain(|scorer| !scorer.posting.completed());
     term_scorers.sort_unstable_by_key(|scorer| scorer.posting.docid());
+}
+
+fn is_sorted(mut it: impl Iterator<Item = u32>) -> bool {
+    if let Some(first) = it.next() {
+        let mut prev = first;
+        for doc in it {
+            if doc < prev {
+                return false;
+            }
+            prev = doc;
+        }
+    }
+    true
 }
