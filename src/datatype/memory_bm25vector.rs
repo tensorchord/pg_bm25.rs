@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{alloc::Layout, ops::Deref, ptr::NonNull};
 
 use pgrx::{
@@ -104,6 +105,23 @@ impl Bm25VectorOutput {
             std::ptr::copy_nonoverlapping(vector.values().as_ptr(), data_ptr, len as usize);
             Bm25VectorOutput(NonNull::new(ptr).unwrap())
         }
+    }
+
+    pub fn from_ids(ids: &[u32]) -> Self {
+        let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+        for term_id in ids {
+            *map.entry(*term_id).or_insert(0) += 1;
+        }
+        let mut doc_len: u32 = 0;
+        let mut indexes = Vec::with_capacity(map.len());
+        let mut values = Vec::with_capacity(map.len());
+        for (index, value) in map {
+            indexes.push(index);
+            values.push(value);
+            doc_len = doc_len.checked_add(value).expect("overflow");
+        }
+        let vector = unsafe { Bm25VectorBorrowed::new_unchecked(doc_len, &indexes, &values) };
+        Self::new(vector)
     }
 
     pub fn into_raw(self) -> *mut Bm25VectorHeader {
