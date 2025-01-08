@@ -3,7 +3,7 @@ use std::num::NonZero;
 use pgrx::{prelude::PgHeapTuple, FromDatum};
 
 use crate::{
-    algorithm::block_wand::{block_wand, block_wand_single, SealedScorer},
+    algorithm::{block_wand, block_wand_single, SealedScorer},
     datatype::{Bm25VectorBorrowed, Bm25VectorOutput},
     guc::BM25_LIMIT,
     page::{page_read, METAPAGE_BLKNO},
@@ -15,6 +15,8 @@ use crate::{
     utils::topk_computer::TopKComputer,
     weight::{bm25_score_batch, idf, Bm25Weight},
 };
+
+use super::options::get_options;
 
 enum Scanner {
     Initial,
@@ -118,6 +120,10 @@ pub unsafe extern "C" fn amendscan(scan: pgrx::pg_sys::IndexScanDesc) {
 
 // return top-k results
 unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorrowed) -> Vec<u64> {
+    if query_vector.len() == 0 {
+        return Vec::new();
+    }
+
     let page = page_read(index, METAPAGE_BLKNO);
     let meta: &MetaPageData = page.as_ref();
     let avgdl = meta.avgdl();
@@ -152,13 +158,14 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
         })
         .collect::<Vec<_>>();
 
+    let encode_option = get_options(index).encode;
     let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
     let term_ids = query_vector.indexes();
     let mut scorers = Vec::new();
 
     for i in 0..term_ids.len() {
         let term_id = term_ids[i];
-        if let Some(posting_reader) = sealed_reader.get_postings(term_id) {
+        if let Some(posting_reader) = sealed_reader.get_postings(term_id, encode_option) {
             let weight = bm25_weight[i];
             scorers.push(SealedScorer {
                 posting: posting_reader,

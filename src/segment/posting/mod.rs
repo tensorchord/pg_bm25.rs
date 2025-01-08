@@ -1,13 +1,17 @@
+mod append;
 mod reader;
 mod serializer;
 mod writer;
 
+use std::num::NonZeroU32;
+
+pub use append::InvertedAppender;
 use bytemuck::{Pod, Zeroable};
-pub use reader::{PostingReader, PostingTermInfoReader};
-pub use serializer::{InvertedAppender, InvertedSerialize, InvertedSerializer};
+pub use reader::{PostingCursor, PostingTermInfoReader};
+pub use serializer::{InvertedSerializer, InvertedWrite};
 pub use writer::InvertedWriter;
 
-use crate::utils::compress_block::compressed_block_size;
+use crate::page::bm25_page_size;
 
 pub const TERMINATED_DOC: u32 = u32::MAX;
 
@@ -16,25 +20,35 @@ pub const COMPRESSION_BLOCK_SIZE: usize =
 
 #[derive(Clone, Copy)]
 pub struct PostingTermInfo {
-    pub doc_count: u32,
-    pub skip_info_blkno: pgrx::pg_sys::BlockNumber,
-    pub skip_info_last_blkno: pgrx::pg_sys::BlockNumber,
-    pub block_data_blkno: pgrx::pg_sys::BlockNumber,
+    pub meta_blkno: pgrx::pg_sys::BlockNumber,
 }
 
 impl PostingTermInfo {
     fn empty() -> Self {
         Self {
-            doc_count: 0,
-            skip_info_blkno: pgrx::pg_sys::InvalidBlockNumber,
-            skip_info_last_blkno: pgrx::pg_sys::InvalidBlockNumber,
-            block_data_blkno: pgrx::pg_sys::InvalidBlockNumber,
+            meta_blkno: pgrx::pg_sys::InvalidBlockNumber,
         }
     }
 }
 
 unsafe impl Zeroable for PostingTermInfo {}
 unsafe impl Pod for PostingTermInfo {}
+
+pub struct PostingTermMetaData {
+    // pub doc_count: u32,
+    pub skip_info_blkno: pgrx::pg_sys::BlockNumber,
+    pub skip_info_last_blkno: pgrx::pg_sys::BlockNumber,
+    pub block_data_blkno: pgrx::pg_sys::BlockNumber,
+    pub block_count: u32,
+    pub last_full_block_last_docid: Option<NonZeroU32>,
+    pub unfulled_doc_cnt: u32,
+    pub unfulled_docid: [u32; 128],
+    pub unfulled_freq: [u32; 128],
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<PostingTermMetaData>() < bm25_page_size());
+};
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy)]
@@ -55,22 +69,11 @@ impl Default for SkipBlockFlags {
 pub struct SkipBlock {
     last_doc: u32,
     blockwand_tf: u32,
-    docid_bits: u8,
-    tf_bits: u8,
+    doc_cnt: u32,
+    size: u16,
     blockwand_fieldnorm_id: u8,
     flag: SkipBlockFlags,
 }
 
 unsafe impl Zeroable for SkipBlock {}
 unsafe impl Pod for SkipBlock {}
-
-impl SkipBlock {
-    // unfulled block will return invalid block size
-    pub fn block_size(&self) -> usize {
-        if !self.flag.contains(SkipBlockFlags::UNFULLED) {
-            compressed_block_size(self.docid_bits) + compressed_block_size(self.tf_bits)
-        } else {
-            ((self.docid_bits as usize) << 8) | (self.tf_bits as usize)
-        }
-    }
-}

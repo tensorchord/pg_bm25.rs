@@ -1,4 +1,4 @@
-use crate::datatype::Bm25VectorBorrowed;
+use crate::{datatype::Bm25VectorBorrowed, options::IndexingOption};
 
 use super::{
     field_norm::FieldNormWriter,
@@ -14,16 +14,18 @@ pub struct IndexBuilder {
     postings_writer: InvertedWriter,
     field_norm_writer: FieldNormWriter,
     payload_writer: PayloadWriter,
+    options: IndexingOption,
 }
 
 impl IndexBuilder {
-    pub fn new() -> Self {
+    pub fn new(options: IndexingOption) -> Self {
         Self {
             doc_cnt: 0,
             doc_term_cnt: 0,
             postings_writer: InvertedWriter::new(),
             field_norm_writer: FieldNormWriter::new(),
             payload_writer: PayloadWriter::new(),
+            options,
         }
     }
 
@@ -52,6 +54,8 @@ impl IndexBuilder {
             self.doc_cnt,
             self.doc_term_cnt as f32 / self.doc_cnt as f32,
             self.field_norm_writer.to_memory_reader(),
+            self.options.partition,
+            self.options.encode,
         );
         self.postings_writer.serialize(&mut postings_serializer);
         let term_info_blkno = postings_serializer.finalize();

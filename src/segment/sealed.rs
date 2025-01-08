@@ -1,8 +1,8 @@
-use crate::datatype::Bm25VectorBorrowed;
+use crate::{datatype::Bm25VectorBorrowed, options::EncodeOption};
 
 use super::{
     field_norm::FieldNormRead,
-    posting::{InvertedSerializer, InvertedWriter, PostingReader, PostingTermInfoReader},
+    posting::{InvertedSerializer, InvertedWriter, PostingCursor, PostingTermInfoReader},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -48,19 +48,11 @@ impl SealedSegmentReader {
         }
     }
 
-    pub fn get_postings(&self, term_id: u32) -> Option<PostingReader<true>> {
+    pub fn get_postings(&self, term_id: u32, encode_option: EncodeOption) -> Option<PostingCursor> {
         let term_info = self.term_info_reader.read(term_id);
-        if term_info.doc_count == 0 {
+        if term_info.meta_blkno == pgrx::pg_sys::InvalidBlockNumber {
             return None;
         }
-        Some(PostingReader::new(self.index, term_info))
-    }
-
-    pub fn get_postings_docid_only(&self, term_id: u32) -> Option<PostingReader<false>> {
-        let term_info = self.term_info_reader.read(term_id);
-        if term_info.doc_count == 0 {
-            return None;
-        }
-        Some(PostingReader::new(self.index, term_info))
+        Some(PostingCursor::new(self.index, term_info, encode_option))
     }
 }

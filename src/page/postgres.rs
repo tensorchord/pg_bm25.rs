@@ -21,10 +21,11 @@ bitflags::bitflags! {
         const FIELD_NORM = 1 << 2;
         const TERM_STATISTIC = 1 << 3;
         const TERM_INFO = 1 << 4;
-        const SKIP_INFO = 1 << 5;
-        const BLOCK_DATA = 1 << 6;
-        const GROWING = 1 << 7;
-        const DELETE = 1 << 8;
+        const TERM_META = 1 << 5;
+        const SKIP_INFO = 1 << 6;
+        const BLOCK_DATA = 1 << 7;
+        const GROWING = 1 << 8;
+        const DELETE = 1 << 9;
         const FREE = 1 << 15;
     }
 }

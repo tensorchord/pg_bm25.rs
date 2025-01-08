@@ -13,6 +13,8 @@ use crate::{
     },
 };
 
+use super::options::get_options;
+
 #[allow(clippy::too_many_arguments)]
 #[pgrx::pg_guard]
 pub unsafe extern "C" fn aminsert(
@@ -99,10 +101,12 @@ pub unsafe extern "C" fn aminsert(
         let fieldnorm_reader = FieldNormReader::new(index, field_norm_blkno);
         let mut appender = InvertedAppender::new(
             index,
+            get_options(index).encode,
+            meta.sealed_segment.term_info_blkno,
+            meta.term_stat_blkno,
             meta.doc_cnt,
             meta.avgdl(),
             fieldnorm_reader,
-            meta.sealed_segment.term_info_blkno,
         );
         writer.serialize(&mut appender);
 

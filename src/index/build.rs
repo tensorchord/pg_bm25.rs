@@ -14,6 +14,8 @@ use crate::{
     token::vocab_len,
 };
 
+use super::options::get_options;
+
 #[pgrx::pg_guard]
 pub unsafe extern "C" fn ambuildempty(index: pgrx::pg_sys::Relation) {
     let mut meta_page = page_alloc_init_forknum(index, PageFlags::META);
@@ -68,11 +70,13 @@ pub unsafe extern "C" fn ambuild(
         assert_eq!(metapage.blkno(), METAPAGE_BLKNO);
     }
 
+    let options = get_options(index);
+
     let mut state = BuildState {
         heap_tuples: 0,
         index_tuples: 0,
         index,
-        builder: IndexBuilder::new(),
+        builder: IndexBuilder::new(options),
         memctx: PgMemoryContexts::new("vchord_bm25_index_build"),
     };
 

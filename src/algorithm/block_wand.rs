@@ -2,14 +2,14 @@ use crate::{
     segment::{
         delete::DeleteBitmapReader,
         field_norm::{id_to_fieldnorm, FieldNormRead, FieldNormReader},
-        posting::{PostingReader, TERMINATED_DOC},
+        posting::{PostingCursor, TERMINATED_DOC},
     },
     utils::topk_computer::TopKComputer,
     weight::Bm25Weight,
 };
 
 pub struct SealedScorer {
-    pub posting: PostingReader<true>,
+    pub posting: PostingCursor,
     pub weight: Bm25Weight,
     pub max_score: f32,
 }
@@ -22,25 +22,25 @@ pub fn block_wand_single(
 ) {
     'outer: loop {
         while scorer.posting.block_max_score(&scorer.weight) <= computer.threshold() {
-            if !scorer.posting.advance_block() {
+            if !scorer.posting.next_block() {
                 break 'outer;
             }
         }
         scorer.posting.decode_block();
         loop {
-            let doc_id = scorer.posting.doc_id();
+            let doc_id = scorer.posting.docid();
             if !delete_bitmap_reader.is_delete(doc_id) {
-                let tf = scorer.posting.term_freq();
+                let tf = scorer.posting.freq();
                 let fieldnorm_id = fieldnorm_reader.read(doc_id);
                 let fieldnorm = id_to_fieldnorm(fieldnorm_id);
                 let score = scorer.weight.score(fieldnorm, tf);
-                computer.push(score, scorer.posting.doc_id());
+                computer.push(score, scorer.posting.docid());
             }
-            if !scorer.posting.advance_cur() {
+            if !scorer.posting.next_doc() {
                 break;
             }
         }
-        if !scorer.posting.advance_block() {
+        if !scorer.posting.next_block() {
             break;
         }
     }
@@ -55,11 +55,13 @@ pub fn block_wand(
     for s in &mut scorers {
         s.posting.decode_block();
     }
-    scorers.sort_by_key(|s| s.posting.doc_id());
+    scorers.sort_by_key(|s| s.posting.docid());
 
     while let Some((before_pivot_len, pivot_len, pivot_doc)) =
         find_pivot_doc(&scorers, computer.threshold())
     {
+        debug_assert!(pivot_doc != TERMINATED_DOC);
+        debug_assert!(before_pivot_len < pivot_len);
         let block_max_score_upperbound: f32 = scorers[..pivot_len]
             .iter_mut()
             .map(|scorer| {
@@ -81,7 +83,7 @@ pub fn block_wand(
             let len = id_to_fieldnorm(fieldnorm_reader.read(pivot_doc));
             let score = scorers[..pivot_len]
                 .iter()
-                .map(|scorer| scorer.weight.score(len, scorer.posting.term_freq()))
+                .map(|scorer| scorer.weight.score(len, scorer.posting.freq()))
                 .sum();
             computer.push(score, pivot_doc);
         }
@@ -98,7 +100,7 @@ fn find_pivot_doc(scorers: &[SealedScorer], threshold: f32) -> Option<(usize, us
         let scorer = &scorers[before_pivot_len];
         max_score += scorer.max_score;
         if max_score > threshold {
-            pivot_doc = scorer.posting.doc_id();
+            pivot_doc = scorer.posting.docid();
             break;
         }
         before_pivot_len += 1;
@@ -110,7 +112,7 @@ fn find_pivot_doc(scorers: &[SealedScorer], threshold: f32) -> Option<(usize, us
     let mut pivot_len = before_pivot_len + 1;
     pivot_len += scorers[pivot_len..]
         .iter()
-        .take_while(|term_scorer| term_scorer.posting.doc_id() == pivot_doc)
+        .take_while(|term_scorer| term_scorer.posting.docid() == pivot_doc)
         .count();
     Some((before_pivot_len, pivot_len, pivot_doc))
 }
@@ -133,8 +135,8 @@ fn block_max_was_too_low_advance_one_scorer(scorers: &mut [SealedScorer], pivot_
     doc_to_seek_after = doc_to_seek_after.saturating_add(1);
 
     for scorer in &mut scorers[pivot_len..] {
-        if scorer.posting.doc_id() <= doc_to_seek_after {
-            doc_to_seek_after = scorer.posting.doc_id();
+        if scorer.posting.docid() <= doc_to_seek_after {
+            doc_to_seek_after = scorer.posting.docid();
         }
     }
     scorers[scorer_to_seek].posting.seek(doc_to_seek_after);
@@ -143,13 +145,16 @@ fn block_max_was_too_low_advance_one_scorer(scorers: &mut [SealedScorer], pivot_
 }
 
 fn restore_ordering(term_scorers: &mut [SealedScorer], ord: usize) {
-    let doc = term_scorers[ord].posting.doc_id();
+    let doc = term_scorers[ord].posting.docid();
     for i in ord + 1..term_scorers.len() {
-        if term_scorers[i].posting.doc_id() >= doc {
+        if term_scorers[i].posting.docid() >= doc {
             break;
         }
         term_scorers.swap(i, i - 1);
     }
+    debug_assert!(is_sorted(
+        term_scorers.iter().map(|scorer| scorer.posting.docid())
+    ));
 }
 
 fn align_scorers(
@@ -172,8 +177,21 @@ fn align_scorers(
 
 fn advance_all_scorers_on_pivot(term_scorers: &mut Vec<SealedScorer>, pivot_len: usize) {
     for scorer in &mut term_scorers[..pivot_len] {
-        scorer.posting.advance();
+        scorer.posting.next_with_auto_decode();
     }
     term_scorers.retain(|scorer| !scorer.posting.completed());
-    term_scorers.sort_unstable_by_key(|scorer| scorer.posting.doc_id());
+    term_scorers.sort_unstable_by_key(|scorer| scorer.posting.docid());
+}
+
+fn is_sorted(mut it: impl Iterator<Item = u32>) -> bool {
+    if let Some(first) = it.next() {
+        let mut prev = first;
+        for doc in it {
+            if doc < prev {
+                return false;
+            }
+            prev = doc;
+        }
+    }
+    true
 }

@@ -1,13 +1,14 @@
-use std::{fmt::Debug, io::Read, mem::MaybeUninit};
+use std::{mem::MaybeUninit, num::NonZeroU32};
 
 use crate::{
-    page::{page_read, PageReader, VirtualPageReader},
+    algorithm::{BlockDecode, BlockDecodeTrait},
+    options::EncodeOption,
+    page::{bm25_page_size, page_read, VirtualPageReader},
     segment::{field_norm::id_to_fieldnorm, posting::SkipBlockFlags},
-    utils::compress_block::BlockDecoder,
     weight::Bm25Weight,
 };
 
-use super::{PostingTermInfo, SkipBlock, COMPRESSION_BLOCK_SIZE, TERMINATED_DOC};
+use super::{PostingTermInfo, PostingTermMetaData, SkipBlock, TERMINATED_DOC};
 
 pub struct PostingTermInfoReader(VirtualPageReader);
 
@@ -41,114 +42,117 @@ impl PostingTermInfoReader {
     }
 }
 
-pub struct PostingReader<const WITH_FREQ: bool> {
+pub struct PostingCursor {
     index: pgrx::pg_sys::Relation,
-    skip_blocks: Box<[SkipBlock]>,
-    doc_count: u32,
-    // decoders
-    doc_decoder: BlockDecoder,
-    freq_decoder: BlockDecoder,
-    // skip cursor
-    block_data_reader: VirtualPageReader,
-    cur_page: pgrx::pg_sys::BlockNumber,
-    page_offset: usize,
-    cur_block: usize,
-    block_offset: usize,
-    remain_doc_cnt: u32,
+    block_decode: BlockDecode,
+    // block reader
+    block_page_reader: VirtualPageReader,
+    block_page_id: u32,
+    page_offset: u32,
+    // skip info reader
+    skip_info_page_id: u32,
+    skip_info_offset: u32,
+    decode_offset: u32,
+    cur_skip_info: SkipBlock,
+    // helper state
     block_decoded: bool,
+    remain_block_cnt: u32,
+    // unfulled block
+    unfulled_docid: Box<[u32]>,
+    unfulled_freq: Box<[u32]>,
+    unfulled_offset: u32,
 }
 
-impl<const WITH_FREQ: bool> Debug for PostingReader<WITH_FREQ> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PostingReader")
-            .field("with_freq", &WITH_FREQ)
-            .field("doc_count", &self.doc_count)
-            .field("cur_page", &self.cur_page)
-            .field("page_offset", &self.page_offset)
-            .field("cur_block", &self.cur_block)
-            .field("block_offset", &self.block_offset)
-            .field("remain_doc_cnt", &self.remain_doc_cnt)
-            .field("block_decoded", &self.block_decoded)
-            .finish()
-    }
-}
+impl PostingCursor {
+    pub fn new(
+        index: pgrx::pg_sys::Relation,
+        term_info: PostingTermInfo,
+        encode_option: EncodeOption,
+    ) -> Self {
+        let PostingTermInfo { meta_blkno } = term_info;
 
-// This api is used in 2 ways:
-// - advance_block + advance_cur to move forward, manually call decode_block
-// - shallow_seek + seek to move to a specific doc_id, advance to move forward. it will decode_block automatically
-impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
-    pub fn new(index: pgrx::pg_sys::Relation, term_info: PostingTermInfo) -> Self {
-        assert!(term_info.doc_count > 0);
-        assert!(term_info.skip_info_blkno != pgrx::pg_sys::InvalidBlockNumber);
-        assert!(term_info.block_data_blkno != pgrx::pg_sys::InvalidBlockNumber);
-        let mut skip_info_reader = PageReader::new(index, term_info.skip_info_blkno);
-        let block_cnt = (term_info.doc_count).div_ceil(COMPRESSION_BLOCK_SIZE as u32);
+        let term_meta_guard = page_read(index, meta_blkno);
+        let block_decode = BlockDecode::new(encode_option);
+        let term_meta: &PostingTermMetaData = term_meta_guard.as_ref();
+        let block_page_reader = VirtualPageReader::new(index, term_meta.block_data_blkno);
+        let remain_block_cnt = term_meta.block_count;
+        let unfulled_docid = term_meta.unfulled_docid[..term_meta.unfulled_doc_cnt as usize].into();
+        let unfulled_freq = term_meta.unfulled_freq[..term_meta.unfulled_doc_cnt as usize].into();
 
-        // for memory alignment
-        let mut buf: Box<[MaybeUninit<SkipBlock>]> = Box::new_uninit_slice(block_cnt as usize);
-        let slice_mut = unsafe {
-            std::slice::from_raw_parts_mut(
-                buf.as_mut_ptr() as *mut u8,
-                block_cnt as usize * std::mem::size_of::<SkipBlock>(),
-            )
-        };
-        skip_info_reader.read_exact(slice_mut).unwrap();
-        drop(skip_info_reader);
-        let skip_blocks = unsafe { buf.assume_init() };
-
-        let block_data_reader = VirtualPageReader::new(index, term_info.block_data_blkno);
-
-        Self {
+        let mut this = Self {
             index,
-            doc_count: term_info.doc_count,
-            skip_blocks,
-            doc_decoder: BlockDecoder::new(),
-            freq_decoder: BlockDecoder::new(),
-            block_data_reader,
-            cur_page: 0,
+            block_decode,
+            block_page_reader,
+            block_page_id: 0,
             page_offset: 0,
-            cur_block: 0,
-            block_offset: 0,
-            remain_doc_cnt: term_info.doc_count,
+            skip_info_page_id: term_meta.skip_info_blkno,
+            skip_info_offset: 0,
+            decode_offset: 0,
+            cur_skip_info: SkipBlock::default(),
             block_decoded: false,
-        }
+            remain_block_cnt,
+            unfulled_docid,
+            unfulled_freq,
+            unfulled_offset: u32::MAX,
+        };
+
+        this.update_skip_info();
+        this
     }
 
-    pub fn doc_count(&self) -> u32 {
-        self.doc_count
-    }
-
-    pub fn advance_block(&mut self) -> bool {
+    pub fn next_block(&mut self) -> bool {
         debug_assert!(!self.completed());
-        self.cur_block += 1;
+        self.remain_block_cnt -= 1;
         self.block_decoded = false;
-        self.remain_doc_cnt -= std::cmp::min(COMPRESSION_BLOCK_SIZE as u32, self.remain_doc_cnt);
-        self.update_page_cursor();
         if self.completed() {
             return false;
         }
+
+        self.decode_offset = self.cur_skip_info.last_doc;
+        self.page_offset += self.cur_skip_info.size as u32;
+
+        self.skip_info_offset += std::mem::size_of::<SkipBlock>() as u32;
+        if self.skip_info_offset == bm25_page_size() as u32 {
+            let page = page_read(self.index, self.skip_info_page_id);
+            self.skip_info_page_id = page.opaque.next_blkno;
+            self.skip_info_offset = 0;
+        }
+        self.update_skip_info();
+
+        if self
+            .cur_skip_info
+            .flag
+            .contains(SkipBlockFlags::PAGE_CHANGED)
+        {
+            self.block_page_id += 1;
+            self.page_offset = 0;
+        }
+
         true
     }
 
-    pub fn advance_cur(&mut self) -> bool {
+    pub fn next_doc(&mut self) -> bool {
         debug_assert!(self.block_decoded);
-        if self.block_offset < COMPRESSION_BLOCK_SIZE.min(self.remain_doc_cnt as usize) {
-            self.block_offset += 1;
+        if self.is_in_unfulled_block() {
+            self.unfulled_offset += 1;
+            debug_assert!(self.unfulled_offset <= self.unfulled_doc_cnt());
+            if self.unfulled_offset == self.unfulled_doc_cnt() {
+                return false;
+            }
+            true
+        } else {
+            self.block_decode.next()
         }
-        if self.block_offset == COMPRESSION_BLOCK_SIZE.min(self.remain_doc_cnt as usize) {
-            return false;
-        }
-        true
     }
 
-    pub fn advance(&mut self) -> bool {
+    pub fn next_with_auto_decode(&mut self) -> bool {
         if self.completed() {
             return false;
         }
-        if self.advance_cur() {
+        if self.next_doc() {
             return true;
         }
-        if self.advance_block() {
+        if self.next_block() {
             self.decode_block();
             true
         } else {
@@ -156,68 +160,46 @@ impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
         }
     }
 
-    pub fn shallow_seek(&mut self, doc_id: u32) -> bool {
+    pub fn shallow_seek(&mut self, docid: u32) -> bool {
         if self.completed() {
             return false;
         }
-        while self.skip_blocks[self.cur_block].last_doc < doc_id {
-            if !self.advance_block() {
+        let prev_docid = self.docid();
+        while self.last_doc_in_block() < docid {
+            if !self.next_block() {
+                debug_assert!(prev_docid == self.docid());
                 return false;
             }
         }
+        debug_assert!(prev_docid == self.docid());
         true
     }
 
-    pub fn seek(&mut self, doc_id: u32) -> u32 {
+    pub fn seek(&mut self, docid: u32) -> u32 {
         if self.completed() {
-            self.block_offset = 128;
+            self.unfulled_offset = self.unfulled_doc_cnt();
             return TERMINATED_DOC;
         }
-        if !self.shallow_seek(doc_id) {
+        if !self.shallow_seek(docid) {
             return TERMINATED_DOC;
         }
         if !self.block_decoded {
             self.decode_block();
         }
-        self.block_offset = self.doc_decoder.output().partition_point(|&v| v < doc_id);
-        self.doc_id()
-    }
 
-    pub fn doc_id(&self) -> u32 {
-        if self.completed() && self.block_offset == 128 {
-            return TERMINATED_DOC;
+        if self.is_in_unfulled_block() {
+            self.unfulled_offset = self
+                .unfulled_docid
+                .partition_point(|&d| d < docid)
+                .try_into()
+                .unwrap();
+            debug_assert!(self.unfulled_offset < self.unfulled_doc_cnt());
+        } else {
+            let incomplete = self.block_decode.seek(docid);
+            debug_assert!(incomplete);
         }
-        self.doc_decoder.output()[self.block_offset]
-    }
-
-    pub fn term_freq(&self) -> u32 {
-        debug_assert!(!self.completed());
-        debug_assert!(self.block_decoded);
-        const {
-            assert!(WITH_FREQ);
-        }
-        self.freq_decoder.output()[self.block_offset]
-    }
-
-    pub fn block_max_score(&self, bm25_weight: &Bm25Weight) -> f32 {
-        if self.completed() {
-            return 0.0;
-        }
-        let fieldnorm_id = self.skip_blocks[self.cur_block].blockwand_fieldnorm_id;
-        let fieldnorm = id_to_fieldnorm(fieldnorm_id);
-        let tf = self.skip_blocks[self.cur_block].blockwand_tf;
-        bm25_weight.score(fieldnorm, tf)
-    }
-
-    pub fn last_doc_in_block(&self) -> u32 {
-        if self.completed() {
-            return TERMINATED_DOC;
-        }
-        self.skip_blocks[self.cur_block].last_doc
-    }
-
-    pub fn completed(&self) -> bool {
-        self.remain_doc_cnt == 0
+        debug_assert!(self.docid() >= docid);
+        self.docid()
     }
 
     pub fn decode_block(&mut self) {
@@ -225,71 +207,76 @@ impl<const WITH_FREQ: bool> PostingReader<WITH_FREQ> {
         if self.block_decoded {
             return;
         }
-        let skip = &self.skip_blocks[self.cur_block];
-        let last_doc = if self.cur_block == 0 {
-            0
-        } else {
-            self.skip_blocks[self.cur_block - 1].last_doc
-        };
-
-        let page = page_read(
-            self.index,
-            self.block_data_reader.get_block_id(self.cur_page),
-        );
-
-        if self.remain_doc_cnt < COMPRESSION_BLOCK_SIZE as u32 {
-            debug_assert!(skip.flag.contains(SkipBlockFlags::UNFULLED));
-            let bytes = self.doc_decoder.decompress_vint_sorted(
-                &page.data()[self.page_offset + std::mem::size_of::<u32>()..],
-                last_doc,
-                self.remain_doc_cnt,
-            );
-            if WITH_FREQ {
-                self.freq_decoder.decompress_vint_unsorted(
-                    &page.data()[(self.page_offset + std::mem::size_of::<u32>() + bytes)..],
-                    self.remain_doc_cnt,
-                );
-                self.freq_decoder
-                    .output_mut()
-                    .iter_mut()
-                    .for_each(|v| *v += 1);
-            }
-        } else {
-            debug_assert!(!skip.flag.contains(SkipBlockFlags::UNFULLED));
-            let bytes = self.doc_decoder.decompress_block_sorted(
-                &page.data()[self.page_offset..],
-                skip.docid_bits,
-                last_doc,
-            );
-            if WITH_FREQ {
-                self.freq_decoder.decompress_block_unsorted(
-                    &page.data()[(self.page_offset + bytes)..],
-                    skip.tf_bits,
-                );
-                self.freq_decoder
-                    .output_mut()
-                    .iter_mut()
-                    .for_each(|v| *v += 1);
-            }
-        }
-        self.block_offset = 0;
         self.block_decoded = true;
-    }
-
-    fn update_page_cursor(&mut self) {
-        self.page_offset += self.skip_blocks[self.cur_block - 1].block_size();
-
-        if self.completed() {
-            self.page_offset = 0;
+        if self.is_in_unfulled_block() {
+            self.unfulled_offset = 0;
             return;
         }
 
-        if self.skip_blocks[self.cur_block]
-            .flag
-            .contains(SkipBlockFlags::PAGE_CHANGED)
-        {
-            self.cur_page += 1;
-            self.page_offset = 0;
+        let skip = &self.cur_skip_info;
+        let page = page_read(
+            self.index,
+            self.block_page_reader.get_block_id(self.block_page_id),
+        );
+        self.block_decode.decode(
+            &page.data()[self.page_offset as usize..][..skip.size as usize],
+            NonZeroU32::new(self.decode_offset),
+            skip.doc_cnt,
+        );
+    }
+
+    pub fn docid(&self) -> u32 {
+        if self.completed() && self.unfulled_offset == self.unfulled_doc_cnt() {
+            return TERMINATED_DOC;
         }
+        if self.is_in_unfulled_block() && self.unfulled_offset != u32::MAX {
+            return self.unfulled_docid[self.unfulled_offset as usize];
+        }
+        debug_assert!(self.block_decode.docid() <= self.last_doc_in_block());
+        self.block_decode.docid()
+    }
+
+    pub fn freq(&self) -> u32 {
+        debug_assert!(!self.completed());
+        debug_assert!(self.block_decoded);
+        if self.is_in_unfulled_block() {
+            return self.unfulled_freq[self.unfulled_offset as usize];
+        }
+        self.block_decode.freq()
+    }
+
+    pub fn block_max_score(&self, weight: &Bm25Weight) -> f32 {
+        if self.completed() {
+            return 0.0;
+        }
+        let len = id_to_fieldnorm(self.cur_skip_info.blockwand_fieldnorm_id);
+        weight.score(len, self.cur_skip_info.blockwand_tf)
+    }
+
+    pub fn last_doc_in_block(&self) -> u32 {
+        if self.completed() {
+            return TERMINATED_DOC;
+        }
+        self.cur_skip_info.last_doc
+    }
+
+    pub fn completed(&self) -> bool {
+        self.remain_block_cnt == 0
+    }
+
+    fn update_skip_info(&mut self) {
+        let page = page_read(self.index, self.skip_info_page_id);
+        let skip_info = *bytemuck::from_bytes(
+            &page.data()[self.skip_info_offset as usize..][..std::mem::size_of::<SkipBlock>()],
+        );
+        self.cur_skip_info = skip_info;
+    }
+
+    fn unfulled_doc_cnt(&self) -> u32 {
+        self.unfulled_docid.len() as u32
+    }
+
+    fn is_in_unfulled_block(&self) -> bool {
+        !self.unfulled_docid.is_empty() && self.remain_block_cnt <= 1
     }
 }

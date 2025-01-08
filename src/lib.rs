@@ -4,6 +4,7 @@ pub mod algorithm;
 pub mod datatype;
 pub mod guc;
 pub mod index;
+pub mod options;
 pub mod page;
 pub mod segment;
 pub mod token;
