@@ -40,7 +40,7 @@ pub fn search_bm25query(
         unsafe { &*(page.data().as_ptr() as *const MetaPageData) }
     };
 
-    let term_stat_reader = TermStatReader::new(index.as_ptr(), meta.term_stat_blkno);
+    let term_stat_reader = TermStatReader::new(index.as_ptr(), meta);
     let avgdl = meta.avgdl();
     let scores = bm25_score_batch(
         meta.doc_cnt,

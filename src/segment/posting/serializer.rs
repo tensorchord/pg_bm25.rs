@@ -2,9 +2,9 @@ use crate::{
     page::{page_read, page_write, PageFlags, PageWriter, VirtualPageWriter},
     segment::{
         field_norm::{id_to_fieldnorm, FieldNormRead, FieldNormReader, MAX_FIELD_NORM},
+        meta::MetaPageData,
         posting::SkipBlockFlags,
     },
-    token::vocab_len,
     utils::compress_block::{BlockDecoder, BlockEncoder},
     weight::{idf, Bm25Weight},
 };
@@ -87,15 +87,12 @@ pub struct InvertedAppender {
 }
 
 impl InvertedAppender {
-    pub fn new(
-        index: pgrx::pg_sys::Relation,
-        doc_cnt: u32,
-        avgdl: f32,
-        fieldnorm_reader: FieldNormReader,
-        term_info_blkno: pgrx::pg_sys::BlockNumber,
-    ) -> Self {
+    pub fn new(index: pgrx::pg_sys::Relation, meta: &MetaPageData) -> Self {
+        let doc_cnt = meta.doc_cnt;
+        let avgdl = meta.avgdl();
+        let fieldnorm_reader = FieldNormReader::new(index, meta.field_norm_blkno);
         let postings_serializer = PostingSerializer::new(index, doc_cnt, avgdl, fieldnorm_reader);
-        let term_info_reader = PostingTermInfoReader::new(index, term_info_blkno);
+        let term_info_reader = PostingTermInfoReader::new(index, meta.sealed_segment);
         Self {
             postings_serializer,
             term_info_reader,
@@ -164,7 +161,7 @@ impl PostingTermInfoSerializer {
     pub fn new(index: pgrx::pg_sys::Relation) -> Self {
         Self {
             index,
-            term_infos: Vec::with_capacity(vocab_len() as usize),
+            term_infos: Vec::new(),
         }
     }
 

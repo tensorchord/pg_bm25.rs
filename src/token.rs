@@ -42,26 +42,6 @@ pub fn tokenize(text: &str) -> Vec<u32> {
     }
 }
 
-pub fn vocab_len() -> u32 {
-    match TOKENIZER_NAME
-        .get()
-        .expect("set guc")
-        .to_str()
-        .expect("str")
-    {
-        "BERT" => BERT_TOKENIZER.vocab_len(),
-        "TOCKEN" => TOCKENIZER.vocab_len(),
-        "UNICODE" => {
-            // TODO: find the correct token table name
-            pgrx::Spi::get_one::<i64>("SELECT max(id) FROM bm25_catalog.test_token;")
-                .expect("failed to get count")
-                .expect("no count") as u32
-                + 1
-        }
-        _ => panic!("Unknown tokenizer"),
-    }
-}
-
 pub fn unicode_tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for word in text.unicode_words() {
@@ -90,7 +70,6 @@ pub fn unicode_tokenize(text: &str) -> Vec<String> {
 
 trait Tokenizer {
     fn encode(&self, text: &str) -> Vec<u32>;
-    fn vocab_len(&self) -> u32;
 }
 
 struct BertWithStemmerAndSplit(tokenizers::Tokenizer);
@@ -117,10 +96,6 @@ impl Tokenizer for BertWithStemmerAndSplit {
         }
         results
     }
-
-    fn vocab_len(&self) -> u32 {
-        self.0.get_vocab_size(false) as u32
-    }
 }
 
 struct Tocken(Tockenizer);
@@ -128,9 +103,5 @@ struct Tocken(Tockenizer);
 impl Tokenizer for Tocken {
     fn encode(&self, text: &str) -> Vec<u32> {
         self.0.tokenize(text)
-    }
-
-    fn vocab_len(&self) -> u32 {
-        self.0.vocab_len() as u32
     }
 }

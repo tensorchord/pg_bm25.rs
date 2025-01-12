@@ -2,36 +2,42 @@ use std::{fmt::Debug, io::Read, mem::MaybeUninit};
 
 use crate::{
     page::{page_read, PageReader, VirtualPageReader},
-    segment::{field_norm::id_to_fieldnorm, posting::SkipBlockFlags},
+    segment::{field_norm::id_to_fieldnorm, sealed::SealedSegmentData},
     utils::compress_block::BlockDecoder,
     weight::Bm25Weight,
 };
 
-use super::{PostingTermInfo, SkipBlock, COMPRESSION_BLOCK_SIZE, TERMINATED_DOC};
+use super::{PostingTermInfo, SkipBlock, SkipBlockFlags, COMPRESSION_BLOCK_SIZE, TERMINATED_DOC};
 
-pub struct PostingTermInfoReader(VirtualPageReader);
+pub struct PostingTermInfoReader {
+    page_reader: VirtualPageReader,
+    term_id_cnt: u32,
+}
 
 impl PostingTermInfoReader {
-    pub fn new(index: pgrx::pg_sys::Relation, blkno: pgrx::pg_sys::BlockNumber) -> Self {
-        Self(VirtualPageReader::new(index, blkno))
+    pub fn new(index: pgrx::pg_sys::Relation, sealed_data: SealedSegmentData) -> Self {
+        let page_reader = VirtualPageReader::new(index, sealed_data.term_info_blkno);
+        Self {
+            page_reader,
+            term_id_cnt: sealed_data.term_id_cnt,
+        }
     }
 
     pub fn read(&self, term_id: u32) -> PostingTermInfo {
-        let mut buf = MaybeUninit::uninit();
-        self.0.read_at(
+        let mut res = PostingTermInfo::empty();
+        if term_id >= self.term_id_cnt {
+            return res;
+        }
+        self.page_reader.read_at(
             term_id * std::mem::size_of::<PostingTermInfo>() as u32,
-            unsafe {
-                std::slice::from_raw_parts_mut(
-                    buf.as_mut_ptr() as *mut u8,
-                    std::mem::size_of::<PostingTermInfo>(),
-                )
-            },
+            bytemuck::bytes_of_mut(&mut res),
         );
-        unsafe { buf.assume_init() }
+        res
     }
 
     pub fn write(&mut self, term_id: u32, info: PostingTermInfo) {
-        self.0.update_at(
+        assert!(term_id < self.term_id_cnt);
+        self.page_reader.update_at(
             term_id * std::mem::size_of::<PostingTermInfo>() as u32,
             std::mem::size_of::<PostingTermInfo>() as u32,
             |data| {

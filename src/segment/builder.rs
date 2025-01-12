@@ -55,7 +55,11 @@ impl IndexBuilder {
         );
         self.postings_writer.serialize(&mut postings_serializer);
         let term_info_blkno = postings_serializer.finalize();
-        let sealed_data = SealedSegmentData { term_info_blkno };
+        let term_id_cnt = self.postings_writer.term_id_cnt();
+        let sealed_data = SealedSegmentData {
+            term_info_blkno,
+            term_id_cnt,
+        };
 
         (payload_blkno, field_norm_blkno, sealed_data)
     }
@@ -70,5 +74,9 @@ impl IndexBuilder {
 
     pub fn doc_term_cnt(&self) -> u64 {
         self.doc_term_cnt
+    }
+
+    pub fn term_id_cnt(&self) -> u32 {
+        self.postings_writer.term_id_cnt()
     }
 }

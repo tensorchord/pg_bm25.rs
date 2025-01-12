@@ -1,21 +1,26 @@
+use std::collections::BTreeMap;
+
 use super::InvertedSerialize;
-use crate::{datatype::Bm25VectorBorrowed, token::vocab_len, utils::vint};
+use crate::{datatype::Bm25VectorBorrowed, utils::vint};
 
 // inverted lists in memory
 pub struct InvertedWriter {
-    term_index: Vec<TFRecorder>,
+    term_index: BTreeMap<u32, TFRecorder>,
 }
 
 impl InvertedWriter {
     pub fn new() -> Self {
         Self {
-            term_index: (0..vocab_len()).map(|_| TFRecorder::new()).collect(),
+            term_index: BTreeMap::new(),
         }
     }
 
     pub fn insert(&mut self, doc_id: u32, vector: Bm25VectorBorrowed) {
         for (&term_id, &tf) in vector.indexes().iter().zip(vector.values()) {
-            let tf_recorder = &mut self.term_index[term_id as usize];
+            let tf_recorder = self
+                .term_index
+                .entry(term_id)
+                .or_insert_with(TFRecorder::new);
             if tf_recorder.current_doc() != doc_id {
                 tf_recorder.try_close_doc();
                 tf_recorder.new_doc(doc_id);
@@ -25,23 +30,49 @@ impl InvertedWriter {
     }
 
     pub fn finalize(&mut self) {
-        for recorder in &mut self.term_index {
+        for recorder in self.term_index.values_mut() {
             recorder.try_close_doc();
         }
     }
 
     pub fn serialize<I: InvertedSerialize>(&self, s: &mut I) {
-        for recorder in &self.term_index {
+        let mut last_term_id = 0;
+        for (&term_id, recorder) in &self.term_index {
+            for _ in last_term_id..term_id {
+                s.new_term(0);
+                s.close_term();
+            }
+
             s.new_term(recorder.total_docs);
             for (doc_id, tf) in recorder.iter() {
                 s.write_doc(doc_id, tf);
             }
             s.close_term();
+            last_term_id = term_id + 1;
         }
     }
 
     pub fn term_stat(&self) -> impl Iterator<Item = u32> + '_ {
-        self.term_index.iter().map(|recorder| recorder.total_docs)
+        let mut iter = self.term_index.iter().peekable();
+        let mut last_term_id = 0;
+        std::iter::from_fn(move || {
+            let (&term_id, recorder) = iter.peek()?;
+            if last_term_id < term_id {
+                last_term_id += 1;
+                return Some(0);
+            }
+            let total_docs = recorder.total_docs;
+            iter.next();
+            last_term_id += 1;
+            Some(total_docs)
+        })
+    }
+
+    pub fn term_id_cnt(&self) -> u32 {
+        self.term_index
+            .last_key_value()
+            .map(|(k, _)| *k + 1)
+            .unwrap_or(0)
     }
 }
 

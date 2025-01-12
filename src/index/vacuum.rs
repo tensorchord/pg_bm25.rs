@@ -9,7 +9,6 @@ use crate::{
         sealed::SealedSegmentReader,
         term_stat::TermStatReader,
     },
-    token::vocab_len,
 };
 
 #[pgrx::pg_guard]
@@ -83,10 +82,11 @@ pub unsafe extern "C" fn amvacuumcleanup(
     }
 
     let index = (*info).index;
-    let mut term_stats = (0..vocab_len()).map(|_| 0u32).collect::<Vec<_>>();
 
     let metapage = page_read(index, METAPAGE_BLKNO);
     let meta: &MetaPageData = metapage.as_ref();
+    let term_id_cnt = meta.term_id_cnt;
+    let mut term_stats = (0..term_id_cnt).map(|_| 0u32).collect::<Vec<_>>();
     let delete_bitmap_reader = DeleteBitmapReader::new(index, meta.delete_bitmap_blkno);
 
     if let Some(growing) = meta.growing_segment.as_ref() {
@@ -104,7 +104,7 @@ pub unsafe extern "C" fn amvacuumcleanup(
     }
 
     let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
-    for i in 0..vocab_len() {
+    for i in 0..meta.sealed_segment.term_id_cnt {
         let Some(mut posting) = sealed_reader.get_postings_docid_only(i) else {
             continue;
         };
@@ -127,8 +127,8 @@ pub unsafe extern "C" fn amvacuumcleanup(
 
     let mut metapage = metapage.upgrade(index);
     let meta: &mut MetaPageData = metapage.as_mut();
-    let term_stat_reader = TermStatReader::new(index, meta.term_stat_blkno);
-    for i in 0..vocab_len() {
+    let term_stat_reader = TermStatReader::new(index, meta);
+    for i in 0..term_id_cnt {
         term_stat_reader.update(i, |tf| {
             *tf = term_stats[i as usize];
         });
