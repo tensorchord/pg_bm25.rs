@@ -22,7 +22,7 @@ INSERT INTO documents (passage) VALUES
 ('Effective search ranking algorithms, such as BM25, improve search results by understanding relevance.');
 
 statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
@@ -31,16 +31,16 @@ statement ok
 SET enable_seqscan=off;
 
 statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
 
 statement ok
-UPDATE documents SET embedding = tokenize(passage);
+UPDATE documents SET embedding = tokenize(passage, 'Bert');
 
 statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
