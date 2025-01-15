@@ -1,0 +1,25 @@
+statement error
+SELECT tokenize('PostgreSQL');
+
+query I
+SELECT tokenize('PostgreSQL', 'Bert');
+----
+{2015:1, 2140:1, 2695:1, 4160:1, 17603:1}
+
+query I
+SELECT tokenize('PostgreSQL', 'Tocken');
+----
+{45687:1}
+
+statement ok
+SELECT create_tokenizer('test_bert', $$
+tokenizer = "Bert"
+$$);
+
+query I
+SELECT tokenize('PostgreSQL', 'test_bert');
+----
+{2015:1, 2140:1, 2695:1, 4160:1, 17603:1}
+
+statement ok
+SELECT drop_tokenizer('test_bert');

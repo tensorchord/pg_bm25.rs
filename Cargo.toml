@@ -34,8 +34,11 @@ tantivy-stemmers = { version = "0.4.0", features = [
 thiserror = "2"
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 
+serde = { version = "1.0.217", features = ["derive"] }
 tocken = "0.1.0"
+toml = "0.8.19"
 unicode-segmentation = "1.12.0"
+validator = { version = "0.19.0", features = ["derive"] }
 
 [dev-dependencies]
 rand = "0.8"

@@ -7,7 +7,8 @@ A PostgreSQL extension for bm25 ranking algorithm. We implemented the Block-Weak
 ```sql
 CREATE TABLE documents (
     id SERIAL PRIMARY KEY,
-    passage TEXT
+    passage TEXT,
+    embedding bm25vector
 );
 
 INSERT INTO documents (passage) VALUES
@@ -22,13 +23,11 @@ INSERT INTO documents (passage) VALUES
 ('Relational databases such as PostgreSQL can handle both structured and unstructured data.'),
 ('Effective search ranking algorithms, such as BM25, improve search results by understanding relevance.');
 
-ALTER TABLE documents ADD COLUMN embedding bm25vector;
-
-UPDATE documents SET embedding = tokenize(passage);
+UPDATE documents SET embedding = tokenize(passage, 'Bert');
 
 CREATE INDEX documents_embedding_bm25 ON documents USING bm25 (embedding bm25_ops);
 
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'PostgreSQL') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'PostgreSQL', 'Bert') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
@@ -92,22 +91,20 @@ CREATE EXTENSION vchord_bm25;
 
 ### Functions
 
-- `tokenize(text) RETURNS bm25vector`: Tokenize the input text into a BM25 vector.
-- `to_bm25query(index_name regclass, query text) RETURNS bm25query`: Convert the input text into a BM25 query.
+- `create_tokenizer(tokenizer_name text, config text)`: Create a tokenizer with the given name and configuration.
+- `create_unicode_tokenizer_and_trigger(tokenizer_name text, table_name text, source_column text, target_column text)`: Create a Unicode tokenizer and trigger function for the given table and columns. It will automatically build the tokenizer according to source_column and store the result in target_column.
+- `drop_tokenizer(tokenizer_name text)`: Drop the tokenizer with the given name.
+- `tokenize(content text, tokenizer_name text) RETURNS bm25vector`: Tokenize the content text into a BM25 vector. 
+- `to_bm25query(index_name regclass, query text, tokenizer_name text) RETURNS bm25query`: Convert the input text into a BM25 query.
 - `bm25vector <&> bm25query RETURNS float4`: Calculate the **negative** BM25 score between the BM25 vector and query.
-- `unicode_tokenizer_trigger(text_column text, vec_column text, stored_token_table text) RETURNS TRIGGER`: A trigger function to tokenize the `text_column`, store the vector in `vec_column`, and store the new tokens in the `bm25_catalog.stored_token_table`. For more information, check the [tokenizer](./tokenizer.md) document.
-- `document_unicode_tokenize(content text, stored_token_table text) RETURNS bm25vector`: tokenize the `content` and store the new tokens in the `bm25_catalog.stored_token_table`. For more information, check the [tokenizer](./tokenizer.md) document.
-- `bm25_query_unicode_tokenize(index_name regclass, query text, stored_token_table text) RETURNS bm25query`: Tokenize the `query` into a BM25 query vector according to the tokens stored in `stored_token_table`. For more information, check the [tokenizer](./tokenizer.md) document.
+
+For more information about tokenizer, check the [tokenizer](./tokenizer.md) document.
 
 ### GUCs
 
 - `bm25_catalog.bm25_limit (integer)`: The maximum number of documents to return in a search. Default is 1, minimum is 1, and maximum is 65535.
 - `bm25_catalog.enable_index (boolean)`: Whether to enable the bm25 index. Default is false.
 - `bm25_catalog.segment_growing_max_page_size (integer)`: The maximum page count of the growing segment. When the size of the growing segment exceeds this value, the segment will be sealed into a read-only segment. Default is 1, minimum is 1, and maximum is 1,000,000.
-- `bm25_catalog.tokenizer (text)`: Tokenizer chosen from:
-  - `BERT`: default uncased BERT tokenizer.
-  - `TOCKEN`: a Unicode tokenizer pre-trained on wiki-103-raw.
-  - `UNICODE`: a Unicode tokenizer that will be trained on your data. (need to work with the trigger function `unicode_tokenizer_trigger`)
 
 ## Contribution
 

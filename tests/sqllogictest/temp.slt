@@ -24,13 +24,13 @@ statement ok
 ALTER TABLE documents ADD COLUMN embedding bm25vector;
 
 statement ok
-UPDATE documents SET embedding = tokenize(passage);
+UPDATE documents SET embedding = tokenize(passage, 'Bert');
 
 statement ok
 CREATE INDEX documents_embedding_bm25 ON documents USING bm25 (embedding bm25_ops);
 
 statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
@@ -39,7 +39,7 @@ statement ok
 SET enable_seqscan=off;
 
 statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
@@ -49,10 +49,10 @@ INSERT INTO documents (passage) VALUES
 ('vchord_bm25 is a postgresql extension for bm25 ranking algorithm.');
 
 statement ok
-UPDATE documents SET embedding = tokenize(passage) WHERE embedding IS NULL;
+UPDATE documents SET embedding = tokenize(passage, 'Bert') WHERE embedding IS NULL;
 
 statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;

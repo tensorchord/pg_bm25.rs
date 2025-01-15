@@ -23,7 +23,7 @@ pub struct PostingTermInfo {
 }
 
 impl PostingTermInfo {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             doc_count: 0,
             skip_info_blkno: pgrx::pg_sys::InvalidBlockNumber,

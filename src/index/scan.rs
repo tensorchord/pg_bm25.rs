@@ -125,7 +125,7 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
     let mut computer = TopKComputer::new(BM25_LIMIT.get() as _);
     let delete_bitmap_reader = DeleteBitmapReader::new(index, meta.delete_bitmap_blkno);
 
-    let term_stat_reader = TermStatReader::new(index, meta.term_stat_blkno);
+    let term_stat_reader = TermStatReader::new(index, meta);
     if let Some(growing) = meta.growing_segment.as_ref() {
         let reader = GrowingSegmentReader::new(index, growing);
         let mut doc_id = meta.sealed_doc_id;

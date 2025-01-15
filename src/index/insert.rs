@@ -5,11 +5,12 @@ use crate::{
     page::{page_free, page_read, page_write, VirtualPageWriter, METAPAGE_BLKNO},
     segment::{
         delete::extend_delete_bit,
-        field_norm::{fieldnorm_to_id, FieldNormReader},
+        field_norm::fieldnorm_to_id,
         growing::{GrowingSegmentData, GrowingSegmentReader},
         meta::MetaPageData,
         posting::{InvertedAppender, InvertedWriter},
-        term_stat::TermStatReader,
+        sealed::extend_sealed_term_id,
+        term_stat::{extend_term_id, TermStatReader},
     },
 };
 
@@ -44,7 +45,6 @@ pub unsafe extern "C" fn aminsert(
 
     let payload_blkno = meta.payload_blkno;
     let field_norm_blkno = meta.field_norm_blkno;
-    let term_stat_blkno = meta.term_stat_blkno;
     let delete_bitmap_blkno = meta.delete_bitmap_blkno;
 
     let tid = item_pointer_to_u64(heap_tid.read());
@@ -59,7 +59,15 @@ pub unsafe extern "C" fn aminsert(
     }
 
     {
-        let term_info_reader = TermStatReader::new(index, term_stat_blkno);
+        let term_id_cnt = vector_borrow
+            .indexes()
+            .iter()
+            .max()
+            .map(|&x| x + 1)
+            .unwrap_or(0);
+        extend_term_id(index, meta, term_id_cnt);
+
+        let term_info_reader = TermStatReader::new(index, meta);
         for term_id in vector_borrow.indexes().iter() {
             term_info_reader.update(*term_id, |tf| {
                 *tf += 1;
@@ -93,17 +101,12 @@ pub unsafe extern "C" fn aminsert(
             doc_id += 1;
         }
         writer.finalize();
+        let term_id_cnt = writer.term_id_cnt();
 
         let mut metapage = page_write(index, METAPAGE_BLKNO);
         let meta: &mut MetaPageData = metapage.as_mut();
-        let fieldnorm_reader = FieldNormReader::new(index, field_norm_blkno);
-        let mut appender = InvertedAppender::new(
-            index,
-            meta.doc_cnt,
-            meta.avgdl(),
-            fieldnorm_reader,
-            meta.sealed_segment.term_info_blkno,
-        );
+        extend_sealed_term_id(index, &mut meta.sealed_segment, term_id_cnt);
+        let mut appender = InvertedAppender::new(index, meta);
         writer.serialize(&mut appender);
 
         meta.sealed_doc_id = doc_id;

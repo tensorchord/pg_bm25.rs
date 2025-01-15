@@ -7,6 +7,7 @@ pub struct MetaPageData {
     pub version: u32,
     pub doc_cnt: u32,
     pub doc_term_cnt: u64,
+    pub term_id_cnt: u32,
     pub sealed_doc_id: u32,
     pub current_doc_id: u32,
     pub field_norm_blkno: u32,

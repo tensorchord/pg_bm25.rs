@@ -1,3 +1,5 @@
+# manual
+
 statement ok
 CREATE TABLE documents (
     id SERIAL PRIMARY KEY,
@@ -18,22 +20,44 @@ INSERT INTO documents (passage) VALUES
 ('Effective search ranking algorithms, such as BM25, improve search results by understanding relevance.');
 
 statement ok
+SELECT create_tokenizer('documents_tokenizer', $$
+tokenizer = 'Unicode'
+table = 'documents'
+column = 'passage'
+$$);
+
+statement ok
 ALTER TABLE documents ADD COLUMN embedding bm25vector;
 
 statement ok
-UPDATE documents SET embedding = tokenize(passage, 'Bert');
+UPDATE documents SET embedding = tokenize(passage, 'documents_tokenizer');
 
 statement ok
 CREATE INDEX documents_embedding_bm25 ON documents USING bm25 (embedding bm25_ops);
 
 statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
+SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Postgresql', 'documents_tokenizer') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
 
 statement ok
-DELETE FROM documents;
+SELECT drop_tokenizer('documents_tokenizer');
+
+statement ok
+DROP TABLE documents;
+
+# trigger
+
+statement ok
+CREATE TABLE documents (
+    id SERIAL PRIMARY KEY,
+    passage TEXT,
+    embedding bm25vector
+);
+
+statement ok
+SELECT create_unicode_tokenizer_and_trigger('Documents_tokenizer', 'documents', 'passage', 'embedding');
 
 statement ok
 INSERT INTO documents (passage) VALUES 
@@ -49,25 +73,16 @@ INSERT INTO documents (passage) VALUES
 ('Effective search ranking algorithms, such as BM25, improve search results by understanding relevance.');
 
 statement ok
-UPDATE documents SET embedding = tokenize(passage, 'Bert') WHERE embedding IS NULL;
+CREATE INDEX documents_embedding_bm25 ON documents USING bm25 (embedding bm25_ops);
 
 statement ok
-VACUUM documents;
-
-statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
-FROM documents
-ORDER BY rank
-LIMIT 10;
-
-statement ok
-SET enable_seqscan=off;
-
-statement ok
-SELECT id, passage, embedding <&> to_bm25query('documents_embedding_bm25', 'Post', 'Bert') AS rank
+SELECT id, passage, embedding <&> to_bm25query('Documents_embedding_bm25', 'Postgresql', 'Documents_tokenizer') AS rank
 FROM documents
 ORDER BY rank
 LIMIT 10;
 
 statement ok
 DROP TABLE documents;
+
+statement ok
+SELECT drop_tokenizer('Documents_tokenizer');
