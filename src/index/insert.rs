@@ -1,3 +1,4 @@
+use lending_iterator::LendingIterator;
 use pgrx::{itemptr::item_pointer_to_u64, FromDatum};
 
 use crate::{
@@ -95,7 +96,9 @@ pub unsafe extern "C" fn aminsert(
         }
 
         let mut writer = InvertedWriter::new();
-        let mut iter = growing_reader.into_iter(block_count);
+        let mut iter = growing_reader
+            .into_lending_iter()
+            .take(block_count as usize);
         while let Some(vector) = iter.next() {
             writer.insert(doc_id, vector);
             doc_id += 1;

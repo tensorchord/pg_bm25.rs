@@ -1,5 +1,6 @@
 use std::num::NonZero;
 
+use lending_iterator::LendingIterator;
 use pgrx::{prelude::PgHeapTuple, FromDatum};
 
 use crate::{
@@ -12,7 +13,7 @@ use crate::{
         meta::MetaPageData, payload::PayloadReader, sealed::SealedSegmentReader,
         term_stat::TermStatReader,
     },
-    utils::topk_computer::TopKComputer,
+    utils::{loser_tree::LoserTree, topk_computer::TopKComputer},
     weight::{bm25_score_batch, idf, Bm25Weight},
 };
 
@@ -117,7 +118,15 @@ pub unsafe extern "C" fn amendscan(scan: pgrx::pg_sys::IndexScanDesc) {
 }
 
 // return top-k results
-unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorrowed) -> Vec<u64> {
+fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorrowed) -> Vec<u64> {
+    let limit = BM25_LIMIT.get();
+    if limit == 0 {
+        return Vec::new();
+    }
+    if limit == -1 {
+        return brute_force_scan(index, query_vector);
+    }
+
     let page = page_read(index, METAPAGE_BLKNO);
     let meta: &MetaPageData = page.as_ref();
     let avgdl = meta.avgdl();
@@ -129,7 +138,7 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
     if let Some(growing) = meta.growing_segment.as_ref() {
         let reader = GrowingSegmentReader::new(index, growing);
         let mut doc_id = meta.sealed_doc_id;
-        let mut iter = reader.into_iter(u32::MAX);
+        let mut iter = reader.into_lending_iter();
         while let Some(vector) = iter.next() {
             if !delete_bitmap_reader.is_delete(doc_id) {
                 let score =
@@ -141,32 +150,24 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
     }
 
     let fieldnorm_reader = FieldNormReader::new(index, meta.field_norm_blkno);
-    let bm25_weight = query_vector
+    let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
+    let scorers = query_vector
         .indexes()
         .iter()
         .zip(query_vector.values())
-        .map(|(&term_id, &term_tf)| {
-            let term_cnt = term_stat_reader.read(term_id);
-            let idf = idf(meta.doc_cnt, term_cnt);
-            Bm25Weight::new(term_tf, idf, avgdl)
+        .filter_map(|(&term_id, &term_tf)| {
+            sealed_reader.get_postings(term_id).map(|posting_reader| {
+                let term_cnt = term_stat_reader.read(term_id);
+                let idf = idf(meta.doc_cnt, term_cnt);
+                let weight = Bm25Weight::new(term_tf, idf, avgdl);
+                SealedScorer {
+                    posting: posting_reader,
+                    weight,
+                    max_score: weight.max_score(),
+                }
+            })
         })
         .collect::<Vec<_>>();
-
-    let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
-    let term_ids = query_vector.indexes();
-    let mut scorers = Vec::new();
-
-    for i in 0..term_ids.len() {
-        let term_id = term_ids[i];
-        if let Some(posting_reader) = sealed_reader.get_postings(term_id) {
-            let weight = bm25_weight[i];
-            scorers.push(SealedScorer {
-                posting: posting_reader,
-                weight,
-                max_score: weight.max_score(),
-            });
-        }
-    }
 
     if scorers.len() == 1 {
         block_wand_single(
@@ -189,5 +190,95 @@ unsafe fn scan_main(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorro
         .to_sorted_slice()
         .iter()
         .map(|(_, doc_id)| payload_reader.read(*doc_id))
+        .collect()
+}
+
+fn brute_force_scan(index: pgrx::pg_sys::Relation, query_vector: Bm25VectorBorrowed) -> Vec<u64> {
+    let mut results = Vec::new();
+
+    let page = page_read(index, METAPAGE_BLKNO);
+    let meta: &MetaPageData = page.as_ref();
+    let avgdl = meta.avgdl();
+
+    let delete_bitmap_reader = DeleteBitmapReader::new(index, meta.delete_bitmap_blkno);
+
+    let term_stat_reader = TermStatReader::new(index, meta);
+    if let Some(growing) = meta.growing_segment.as_ref() {
+        let reader = GrowingSegmentReader::new(index, growing);
+        let mut doc_id = meta.sealed_doc_id;
+        let mut iter = reader.into_lending_iter();
+        while let Some(vector) = iter.next() {
+            if !delete_bitmap_reader.is_delete(doc_id) {
+                let score =
+                    bm25_score_batch(meta.doc_cnt, avgdl, &term_stat_reader, vector, query_vector);
+                results.push((score, doc_id));
+            }
+            doc_id += 1;
+        }
+    }
+
+    let fieldnorm_reader = FieldNormReader::new(index, meta.field_norm_blkno);
+    let sealed_reader = SealedSegmentReader::new(index, meta.sealed_segment);
+
+    struct Cmp(f32, u32);
+    impl PartialEq for Cmp {
+        fn eq(&self, other: &Self) -> bool {
+            self.1.eq(&other.1)
+        }
+    }
+    impl Eq for Cmp {}
+    impl PartialOrd for Cmp {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for Cmp {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.1.cmp(&other.1)
+        }
+    }
+
+    let iters = query_vector
+        .indexes()
+        .iter()
+        .zip(query_vector.values())
+        .filter_map(|(&term_id, &term_tf)| {
+            sealed_reader.get_postings(term_id).map(|posting_reader| {
+                let term_cnt = term_stat_reader.read(term_id);
+                let idf = idf(meta.doc_cnt, term_cnt);
+                let weight = Bm25Weight::new(term_tf, idf, avgdl);
+                SealedScorer {
+                    posting: posting_reader,
+                    weight,
+                    max_score: weight.max_score(),
+                }
+                .into_iter(&fieldnorm_reader, &delete_bitmap_reader)
+                .map(|(a, b)| Cmp(a, b))
+            })
+        })
+        .collect::<Vec<_>>();
+    let loser_tree = LoserTree::new(iters);
+
+    let mut cur_docid = None;
+    let mut cur_score = 0.;
+    for Cmp(score, docid) in loser_tree {
+        if Some(docid) != cur_docid {
+            if let Some(docid) = cur_docid {
+                results.push((cur_score, docid));
+            }
+            cur_docid = Some(docid);
+            cur_score = 0.;
+        }
+        cur_score += score;
+    }
+    if let Some(docid) = cur_docid {
+        results.push((cur_score, docid));
+    }
+
+    results.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    let payload_reader = PayloadReader::new(index, meta.payload_blkno);
+    results
+        .into_iter()
+        .map(|(_, doc_id)| payload_reader.read(doc_id))
         .collect()
 }

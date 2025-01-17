@@ -1,3 +1,5 @@
+use lending_iterator::LendingIterator;
+
 use crate::{
     page::{bm25_page_size, page_read, page_write, METAPAGE_BLKNO},
     segment::{
@@ -92,7 +94,7 @@ pub unsafe extern "C" fn amvacuumcleanup(
     if let Some(growing) = meta.growing_segment.as_ref() {
         let reader = GrowingSegmentReader::new(index, growing);
         let mut doc_id = meta.sealed_doc_id;
-        let mut iter = reader.into_iter(u32::MAX);
+        let mut iter = reader.into_lending_iter();
         while let Some(vector) = iter.next() {
             if !delete_bitmap_reader.is_delete(doc_id) {
                 for &idx in vector.indexes() {

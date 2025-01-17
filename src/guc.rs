@@ -10,7 +10,7 @@ pub unsafe fn init() {
         "bm25 query limit",
         "The maximum number of documents to return in a search",
         &BM25_LIMIT,
-        1,
+        -1,
         65535,
         GucContext::Userset,
         GucFlags::default(),
