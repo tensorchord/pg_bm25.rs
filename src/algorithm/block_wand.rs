@@ -1,3 +1,5 @@
+use generator::done;
+
 use crate::{
     segment::{
         delete::DeleteBitmapReader,
@@ -12,6 +14,39 @@ pub struct SealedScorer {
     pub posting: PostingReader<true>,
     pub weight: Bm25Weight,
     pub max_score: f32,
+}
+
+impl SealedScorer {
+    pub fn into_iter<'a>(
+        self,
+        fieldnorm_reader: &'a FieldNormReader,
+        delete_bitmap_reader: &'a DeleteBitmapReader,
+    ) -> impl Iterator<Item = (f32, u32)> + 'a {
+        let mut scorer = self;
+        let g = generator::Gn::new_scoped_local(move |mut s| {
+            loop {
+                scorer.posting.decode_block();
+                loop {
+                    let doc_id = scorer.posting.doc_id();
+                    if !delete_bitmap_reader.is_delete(doc_id) {
+                        let tf = scorer.posting.term_freq();
+                        let fieldnorm_id = fieldnorm_reader.read(doc_id);
+                        let fieldnorm = id_to_fieldnorm(fieldnorm_id);
+                        let score = scorer.weight.score(fieldnorm, tf);
+                        s.yield_with((score, scorer.posting.doc_id()));
+                    }
+                    if !scorer.posting.advance_cur() {
+                        break;
+                    }
+                }
+                if !scorer.posting.advance_block() {
+                    break;
+                }
+            }
+            done!()
+        });
+        g.into_iter()
+    }
 }
 
 pub fn block_wand_single(

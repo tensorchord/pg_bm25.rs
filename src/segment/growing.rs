@@ -1,5 +1,7 @@
 use std::num::NonZero;
 
+use lending_iterator::{lending_iterator::LendingIteratorඞItem, LendingIterator, HKT};
+
 use crate::{
     datatype::{Bm25VectorBorrowed, Bm25VectorHeader, Bm25VectorInput},
     guc::SEGMENT_GROWING_MAX_PAGE_SIZE,
@@ -24,16 +26,6 @@ pub struct GrowingSegmentReader {
     blkno: pgrx::pg_sys::BlockNumber,
 }
 
-pub struct GrowingSegmentIterator {
-    index: pgrx::pg_sys::Relation,
-    blkno: pgrx::pg_sys::BlockNumber,
-    page: Option<PageReadGuard>,
-    offset: u16,
-    count: u16,
-    page_count: u32,
-    max_page_count: u32,
-}
-
 impl GrowingSegmentReader {
     pub fn new(index: pgrx::pg_sys::Relation, data: &GrowingSegmentData) -> Self {
         Self {
@@ -42,55 +34,54 @@ impl GrowingSegmentReader {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
-    pub fn into_iter(self, max_page_count: u32) -> GrowingSegmentIterator {
+    pub fn into_lending_iter(
+        self,
+    ) -> impl LendingIterator + for<'a> LendingIteratorඞItem<'a, T = Bm25VectorBorrowed<'a>> {
+        struct TmpState {
+            index: pgrx::pg_sys::Relation,
+            blkno: pgrx::pg_sys::BlockNumber,
+            page: Option<PageReadGuard>,
+            offset: u16,
+            count: u16,
+        }
+
+        impl TmpState {
+            fn page(&self) -> &PageReadGuard {
+                self.page.as_ref().unwrap()
+            }
+        }
+
         let GrowingSegmentReader { index, blkno } = self;
         let page = page_read(index, blkno);
         let count = page_get_max_offset_number(&page);
-        GrowingSegmentIterator {
+        let state = TmpState {
             index,
             blkno,
             page: Some(page),
             offset: 1,
             count,
-            page_count: 0,
-            max_page_count,
-        }
-    }
-}
+        };
 
-impl GrowingSegmentIterator {
-    // It needs lifetime annotation for borrowed vector, so we don't use std::iter::Iterator
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<Bm25VectorBorrowed<'_>> {
-        if self.blkno == pgrx::pg_sys::InvalidBlockNumber {
-            return None;
-        }
-        if self.offset > self.count {
-            self.blkno = self.page().opaque.next_blkno;
-            if self.blkno == pgrx::pg_sys::InvalidBlockNumber {
-                self.page = None;
+        lending_iterator::from_fn::<HKT!(Bm25VectorBorrowed<'_>), _, _>(state, |state| {
+            if state.blkno == pgrx::pg_sys::InvalidBlockNumber {
                 return None;
             }
-            self.page_count += 1;
-            if self.page_count == self.max_page_count {
-                self.blkno = pgrx::pg_sys::InvalidBlockNumber;
-                self.page = None;
-                return None;
+            if state.offset > state.count {
+                state.blkno = state.page().opaque.next_blkno;
+                if state.blkno == pgrx::pg_sys::InvalidBlockNumber {
+                    state.page = None;
+                    return None;
+                }
+                state.page = Some(page_read(state.index, state.blkno));
+                state.offset = 1;
+                state.count = page_get_max_offset_number(state.page());
             }
-            self.page = Some(page_read(self.index, self.blkno));
-            self.offset = 1;
-            self.count = page_get_max_offset_number(self.page());
-        }
-        let offset = self.offset;
-        self.offset += 1;
-        let item_id = page_get_item_id(self.page(), offset);
-        let item: &Bm25VectorHeader = page_get_item(self.page(), item_id);
-        Some(item.borrow())
-    }
-
-    fn page(&self) -> &PageReadGuard {
-        self.page.as_ref().unwrap()
+            let offset = state.offset;
+            state.offset += 1;
+            let item_id = page_get_item_id(state.page(), offset);
+            let item: &Bm25VectorHeader = page_get_item(state.page(), item_id);
+            Some(item.borrow())
+        })
     }
 }
 

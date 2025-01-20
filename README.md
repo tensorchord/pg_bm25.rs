@@ -102,7 +102,7 @@ For more information about tokenizer, check the [tokenizer](./tokenizer.md) docu
 
 ### GUCs
 
-- `bm25_catalog.bm25_limit (integer)`: The maximum number of documents to return in a search. Default is 1, minimum is 1, and maximum is 65535.
+- `bm25_catalog.bm25_limit (integer)`: The maximum number of documents to return in a search. Default is 100, minimum is -1, and maximum is 65535. When set to -1, it will perform brute force search and return all documents with scores greater than 0.
 - `bm25_catalog.enable_index (boolean)`: Whether to enable the bm25 index. Default is false.
 - `bm25_catalog.segment_growing_max_page_size (integer)`: The maximum page count of the growing segment. When the size of the growing segment exceeds this value, the segment will be sealed into a read-only segment. Default is 1, minimum is 1, and maximum is 1,000,000.
 
